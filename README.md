@@ -5,7 +5,7 @@ This is an app for users to download ***original quality*** media.
 Why choose **Danload**?
 
 1. Free  
-Good products might be costly, but no one refuses free stuffs with potentials.
+Good products may be costly, and no one refuses free stuffs with potentials.
 2. Simple  
 I'm a developer and a user, from a user's perspective, simple visualization is comforting.
 3. Convenient  
@@ -21,7 +21,7 @@ By using certain softwares/apps, you may be able to download certain media, but 
 为什么选择**Danload**？
 
 1. 完全免费  
-好产品或许价格昂贵，但没人会拒绝一个潜力十足的免费工具。
+好产品或许价格昂贵，而没有人能拒绝一个潜力十足的免费工具。
 2. 极简设计  
 我既是开发者也是用户。从用户的视角来看，简约的视觉设计总能让人心情愉悦。
 3. 方便快捷  
