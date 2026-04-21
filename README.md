@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="egg.icns" width="120" alt="Danload Icon"/>
+<img src="icon.png" width="120" alt="Danload Icon"/>
 
 # Danload
 
