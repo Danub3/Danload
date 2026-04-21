@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//Users/daniel/coding/Danload/**)",
-      "Bash(ls -la /Users/daniel/coding/Danload/Danload/*.sh)"
-    ]
-  }
-}
