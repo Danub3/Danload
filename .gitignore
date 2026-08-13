@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+.claude/
+.workbuddy/
+ffmpeg
+ffprobe
+sign_and_notarize.sh

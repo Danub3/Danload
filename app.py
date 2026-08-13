@@ -6,14 +6,13 @@ import sys
 import re
 import subprocess
 import glob
-import shutil
 import urllib.request
 import json
 import webbrowser
 from urllib.parse import urlparse, unquote
 import time
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 
 _extra_paths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
 os.environ['PATH'] = ':'.join(_extra_paths + [p for p in os.environ.get('PATH', '').split(':') if p not in _extra_paths])
@@ -30,6 +29,23 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 DEFAULT_DOWNLOAD_PATH = os.path.join(os.path.expanduser('~'), 'Downloads', 'Danload')
+ORIGINAL_CONTAINER_DEFAULT = 'mkv'
+ORIGINAL_CONTAINER_VALUES = ('MKV', 'MP4')
+
+
+def get_settings_path():
+    if sys.platform == 'darwin':
+        base = os.path.join(os.path.expanduser('~'), 'Library', 'Application Support')
+    elif os.name == 'nt':
+        base = os.environ.get('APPDATA') or os.path.join(
+            os.path.expanduser('~'), 'AppData', 'Roaming')
+    else:
+        base = os.environ.get('XDG_CONFIG_HOME') or os.path.join(
+            os.path.expanduser('~'), '.config')
+    return os.path.join(base, 'Danload', 'settings.json')
+
+
+SETTINGS_PATH = get_settings_path()
 
 
 def get_ffmpeg_path():
@@ -49,6 +65,9 @@ class DownloaderApp(ctk.CTk):
         self._last_error = ""
         self.lang = "zh"
         self.download_folder = DEFAULT_DOWNLOAD_PATH
+        self.original_container = ORIGINAL_CONTAINER_DEFAULT
+        self.proxy = ""
+        self.load_settings()
 
         # Smooth progress state (main-thread animation)
         self._progress_target = 0.0
@@ -64,7 +83,12 @@ class DownloaderApp(ctk.CTk):
                 "opt_audio": "纯音频", "opt_general": "文件下载",
                 "opt_cookie": "使用浏览器 Cookie", "lang_switch": "EN",
                 "err_empty": "请先粘贴链接", "err_invalid": "未检测到有效链接",
+                "err_telegram_unsupported": "Danload 目前支持公开 t.me 频道视频链接；Telegram Web、私有群和受限内容不能直接粘贴下载。",
                 "btn_browse": "选择", "label_folder": "保存位置",
+                "label_container": "原画封装",
+                "label_proxy": "代理地址", "placeholder_proxy": "http://127.0.0.1:7890（可选）",
+                "status_done_original": "✅ 下载完成！（{container} 封装）",
+                "status_done_mkv_fallback": "✅ 下载完成！（MKV · 原画编码不兼容 MP4）",
                 "update_title": "发现新版本",
                 "update_msg": "Danload {ver} 已发布，当前版本 {cur}。\n\n更新内容：\n{notes}",
                 "update_btn": "前往下载",
@@ -78,7 +102,12 @@ class DownloaderApp(ctk.CTk):
                 "opt_audio": "Audio", "opt_general": "File",
                 "opt_cookie": "Use Browser Cookie", "lang_switch": "中文",
                 "err_empty": "Please paste a URL first", "err_invalid": "No valid URL detected",
+                "err_telegram_unsupported": "Danload currently supports public t.me channel video links. Telegram Web, private chats, and restricted content cannot be pasted directly.",
                 "btn_browse": "Browse", "label_folder": "Save to",
+                "label_container": "Original container",
+                "label_proxy": "Proxy", "placeholder_proxy": "http://127.0.0.1:7890 (optional)",
+                "status_done_original": "✅ Done! ({container} container)",
+                "status_done_mkv_fallback": "✅ Done! (MKV - codec incompatible with MP4)",
                 "update_title": "New Version Available",
                 "update_msg": "Danload {ver} is available (you have {cur}).\n\nWhat's new:\n{notes}",
                 "update_btn": "Download",
@@ -87,12 +116,14 @@ class DownloaderApp(ctk.CTk):
         }
 
         self.title("Danload")
-        self.center_window(720, 390)
+        self.center_window(720, 465)
         self.resizable(False, False)
         self.configure(fg_color=("#F5F5F7", "#1C1C1E"))
 
         self.cookie_file_path = ctk.StringVar(value="")
         self.use_cookie_var = ctk.BooleanVar(value=False)
+        self.proxy_var = ctk.StringVar(value=self.proxy)
+        self.original_container_var = ctk.StringVar(value=self.original_container.upper())
 
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.build_main_ui()
@@ -102,6 +133,46 @@ class DownloaderApp(ctk.CTk):
 
     def t(self, key):
         return self.i18n[self.lang][key]
+
+    def load_settings(self):
+        try:
+            with open(SETTINGS_PATH, encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+
+        folder = data.get('download_folder')
+        if isinstance(folder, str) and folder.strip():
+            self.download_folder = folder
+
+        container = data.get('original_container')
+        if isinstance(container, str) and container.lower() in ('mkv', 'mp4'):
+            self.original_container = container.lower()
+
+        proxy = data.get('proxy')
+        if isinstance(proxy, str):
+            self.proxy = proxy
+
+    def _selected_original_container(self):
+        value = self.original_container_var.get().strip().lower()
+        if value in ('mkv', 'mp4'):
+            return value
+        return ORIGINAL_CONTAINER_DEFAULT
+
+    def _save_settings(self):
+        try:
+            os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+            data = {
+                'download_folder': self.download_folder,
+                'original_container': self._selected_original_container(),
+                'proxy': self._get_proxy() or '',
+            }
+            with open(SETTINGS_PATH, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     # ── Update check ─────────────────────────────────────────────────────────
 
@@ -118,7 +189,8 @@ class DownloaderApp(ctk.CTk):
                 "https://api.github.com/repos/Danub3/Danload/releases/latest",
                 headers={"User-Agent": "Danload/" + APP_VERSION}
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            opener = self._build_opener()
+            with opener.open(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             latest = data.get("tag_name", "").lstrip("v")
             notes = data.get("body", "").strip()
@@ -233,6 +305,27 @@ class DownloaderApp(ctk.CTk):
             self._make_egg(val, key)
         self.select_egg("video_original")
 
+        # Original Video Container
+        container_frame = ctk.CTkFrame(
+            self.main_frame,
+            fg_color=("#FFFFFF", "#2C2C2E"), corner_radius=10,
+            border_width=1, border_color=("#D1D1D6", "#3A3A3C"))
+        container_frame.pack(fill="x", pady=(8, 0))
+
+        self.container_key_label = ctk.CTkLabel(
+            container_frame, text=self.t("label_container"),
+            font=("Helvetica Neue", 12), text_color=("#6E6E73", "#8E8E93"))
+        self.container_key_label.pack(side="left", padx=(14, 8), pady=9)
+
+        self.container_segment = ctk.CTkSegmentedButton(
+            container_frame,
+            values=list(ORIGINAL_CONTAINER_VALUES),
+            variable=self.original_container_var,
+            width=150, height=28,
+            font=("Helvetica Neue", 12),
+            command=self.set_original_container)
+        self.container_segment.pack(side="right", padx=(4, 14), pady=9)
+
         # Save Location
         folder_frame = ctk.CTkFrame(
             self.main_frame,
@@ -297,6 +390,25 @@ class DownloaderApp(ctk.CTk):
             font=("Helvetica Neue", 11))
         self.cookie_file_entry.pack(side="left", fill="x", expand=True, padx=(10, 6))
 
+        # Proxy row
+        proxy_row = ctk.CTkFrame(opts_frame, fg_color="transparent")
+        proxy_row.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.proxy_key_label = ctk.CTkLabel(
+            proxy_row, text=self.t("label_proxy"),
+            font=("Helvetica Neue", 12), text_color=("#6E6E73", "#8E8E93"))
+        self.proxy_key_label.pack(side="left", padx=(0, 8))
+
+        self.proxy_entry = ctk.CTkEntry(
+            proxy_row, textvariable=self.proxy_var,
+            placeholder_text=self.t("placeholder_proxy"),
+            height=28, corner_radius=6,
+            border_color=("#D1D1D6", "#3A3A3C"),
+            fg_color=("#F5F5F7", "#1C1C1E"),
+            font=("Helvetica Neue", 11))
+        self.proxy_entry.pack(side="left", fill="x", expand=True)
+        self.proxy_entry.bind("<FocusOut>", lambda e: self._save_settings())
+
         # Progress bar (thin, smooth)
         self.progress_bar = ctk.CTkProgressBar(
             self.main_frame, height=5, corner_radius=3,
@@ -354,8 +466,11 @@ class DownloaderApp(ctk.CTk):
         self.open_dir_btn.configure(text=self.t("btn_open"))
         self.cookie_checkbox.configure(text=self.t("opt_cookie"))
         self.cookie_file_btn.configure(text=self.t("btn_browse"))
+        self.proxy_key_label.configure(text=self.t("label_proxy"))
+        self.proxy_entry.configure(placeholder_text=self.t("placeholder_proxy"))
         self.folder_key_label.configure(text=self.t("label_folder"))
         self.folder_btn.configure(text=self.t("btn_browse"))
+        self.container_key_label.configure(text=self.t("label_container"))
         for val, btn in self.eggs.items():
             emoji = btn.cget("text").split(" ")[0]
             btn.configure(text=f"{emoji} {self.t(btn.text_key)}")
@@ -393,6 +508,14 @@ class DownloaderApp(ctk.CTk):
                               text_color=("#6E6E73", "#8E8E93"),
                               font=("Helvetica Neue", 13, "normal"))
 
+    def set_original_container(self, value):
+        container = (value or '').lower()
+        if container not in ('mkv', 'mp4'):
+            container = ORIGINAL_CONTAINER_DEFAULT
+            self.original_container_var.set(ORIGINAL_CONTAINER_DEFAULT.upper())
+        self.original_container = container
+        self._save_settings()
+
     # ── Smooth progress animation (main thread) ──────────────────────────────
 
     def _start_progress_animation(self):
@@ -413,6 +536,23 @@ class DownloaderApp(ctk.CTk):
         self.after(16, self._tick_progress)
 
     # ── Helpers ─────────────────────────────────────────────────────────────
+
+    def _get_proxy(self):
+        """Return the configured proxy URL, or None."""
+        p = self.proxy_var.get().strip() if hasattr(self, 'proxy_var') else ''
+        if not p:
+            p = getattr(self, 'proxy', '').strip()
+        return p if p else None
+
+    def _build_opener(self):
+        """Build a urllib opener that honours the configured proxy."""
+        proxy = self._get_proxy()
+        if proxy:
+            handler = urllib.request.ProxyHandler({
+                'http': proxy, 'https': proxy, 'ftp': proxy,
+            })
+            return urllib.request.build_opener(handler)
+        return urllib.request.build_opener()
 
     def _short_path(self, path):
         home = os.path.expanduser('~')
@@ -496,6 +636,39 @@ class DownloaderApp(ctk.CTk):
 
         return picks if picks else ['en']
 
+    def _remux_to_mp4(self, base_filename):
+        """Remux the downloaded file to MP4 using ``-c copy``.
+
+        Always merges to MKV during download, so this step converts the
+        resulting MKV (or other container) to MP4. If the codec is
+        incompatible with the MP4 container (e.g. FLAC audio), the
+        remux fails gracefully and the original file is kept.
+
+        Returns ``'mp4'`` on success, or the original extension (e.g.
+        ``'mkv'``) if the remux was skipped or failed.
+        """
+        for ext in ['.mkv', '.webm', '.flv', '.ts', '.m4v', '.mp4']:
+            src = f"{base_filename}{ext}"
+            if not os.path.exists(src):
+                continue
+            if ext == '.mp4':
+                return 'mp4'
+            dst = f"{base_filename}.mp4"
+            if os.path.exists(dst):
+                os.remove(dst)
+            try:
+                subprocess.run([
+                    get_ffmpeg_path(), '-y', '-i', src,
+                    '-c', 'copy', '-movflags', '+faststart', dst
+                ], check=True, capture_output=True)
+                os.remove(src)
+                return 'mp4'
+            except subprocess.CalledProcessError:
+                if os.path.exists(dst):
+                    os.remove(dst)
+                return ext.lstrip('.')
+        return 'mkv'
+
     # ── File / folder pickers ────────────────────────────────────────────────
 
     def browse_cookie_file(self):
@@ -514,6 +687,7 @@ class DownloaderApp(ctk.CTk):
         if path:
             self.download_folder = path
             self.folder_val_label.configure(text=self._short_path(path))
+            self._save_settings()
 
     def open_download_folder(self):
         os.makedirs(self.download_folder, exist_ok=True)
@@ -560,8 +734,37 @@ class DownloaderApp(ctk.CTk):
 
     # ── URL normalisation ───────────────────────────────────────────────────
 
+    def is_telegram_url(self, url):
+        host = urlparse(url).netloc.lower().removeprefix('www.')
+        return host in ('t.me', 'telegram.me', 'web.telegram.org',
+                        'webk.telegram.org', 'webz.telegram.org')
+
+    def _telegram_public_post_url(self, url):
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().removeprefix('www.')
+        if host == 'telegram.me':
+            host = 't.me'
+        if host != 't.me':
+            return None
+
+        parts = [unquote(p) for p in parsed.path.split('/') if p]
+        if len(parts) >= 3 and parts[0] == 's' and parts[2].isdigit():
+            channel, msg_id = parts[1], parts[2]
+        elif len(parts) >= 2 and parts[1].isdigit() and parts[0] not in ('c', 'joinchat'):
+            channel, msg_id = parts[0], parts[1]
+        else:
+            return None
+
+        if channel.startswith('+'):
+            return None
+        suffix = '?single' if 'single' in parsed.query else ''
+        return f"https://t.me/{channel}/{msg_id}{suffix}"
+
     def normalize_url(self, url):
         from urllib.parse import parse_qs
+        telegram_url = self._telegram_public_post_url(url)
+        if telegram_url:
+            return telegram_url
         # iesdouyin.com share links → douyin.com/video/{id}
         m = re.search(r'iesdouyin\.com/share/video/(\d+)', url)
         if m:
@@ -587,7 +790,8 @@ class DownloaderApp(ctk.CTk):
                 url,
                 headers={'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) '
                                        'AppleWebKit/605.1.15'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            opener = self._build_opener()
+            with opener.open(req, timeout=10) as resp:
                 final = resp.url
             parsed = urlparse(final)
             if 'douyin.com/video/' in final:
@@ -611,15 +815,18 @@ class DownloaderApp(ctk.CTk):
             return
 
         url = self.normalize_url(match.group(0))
+        if self.is_telegram_url(url) and not self._telegram_public_post_url(url):
+            self.status_label.configure(text=self.t("err_telegram_unsupported"),
+                                        text_color=("#FF3B30", "#FF453A"))
+            return
         self.url_entry.delete(0, 'end')
         self.url_entry.insert(0, url)
 
         self.is_cancelled = False
         self.cleanup_target = None
         download_type = self.option_var.get()
+        original_container = self._selected_original_container()
         self._last_url = url
-        self._last_download_type = download_type
-        self._cookie_refresh_attempts = 0
         self._last_error = ""
 
         self.download_btn.configure(state="disabled")
@@ -630,7 +837,8 @@ class DownloaderApp(ctk.CTk):
         self.status_label.configure(text=msg, text_color=("#0071E3", "#0A84FF"))
 
         target = self.download_general_file if download_type == 'general_file' else self.download_media
-        args = (url,) if download_type == 'general_file' else (url, download_type)
+        args = ((url,) if download_type == 'general_file'
+                else (url, download_type, original_container))
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def reset_ui_state(self):
@@ -657,7 +865,8 @@ class DownloaderApp(ctk.CTk):
             self.status_label.configure(text=msg, text_color=("#34C759", "#30D158"))
 
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as resp, open(filepath, 'wb') as out:
+            opener = self._build_opener()
+            with opener.open(req) as resp, open(filepath, 'wb') as out:
                 file_size = int(resp.info().get('Content-Length', -1))
                 downloaded = 0
                 while True:
@@ -687,13 +896,14 @@ class DownloaderApp(ctk.CTk):
 
     # ── Media download ───────────────────────────────────────────────────────
 
-    def download_media(self, url, download_type):
+    def download_media(self, url, download_type, original_container=None):
         output_path = self.download_folder
         os.makedirs(output_path, exist_ok=True)
+        if original_container not in ('mkv', 'mp4'):
+            original_container = ORIGINAL_CONTAINER_DEFAULT
 
         is_douyin   = any(d in url for d in ['douyin.com', 'v.douyin.com', 'iesdouyin.com', 'tiktok.com'])
-        is_bilibili = any(d in url for d in ['bilibili.com', 'b23.tv'])
-        is_youtube  = any(d in url for d in ['youtube.com', 'youtu.be', 'yt.be'])
+        is_telegram = self.is_telegram_url(url)
 
         # Resolve Douyin short links first
         if is_douyin and 'v.douyin.com' in url:
@@ -716,6 +926,11 @@ class DownloaderApp(ctk.CTk):
                 text="🔄 备用方案下载中..." if self.lang == "zh" else "🔄 Trying fallback...",
                 text_color=("#FF9500", "#FF9F0A"))
 
+        if is_telegram:
+            self.status_label.configure(
+                text="🔄 正在解析 Telegram 视频..." if self.lang == "zh" else "🔄 Fetching Telegram video...",
+                text_color=("#FF9500", "#FF9F0A"))
+
         headers = {
             'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
                            'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -730,22 +945,30 @@ class DownloaderApp(ctk.CTk):
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Accept-Language': 'zh-CN,zh;q=0.9',
             })
+        if is_telegram:
+            headers.update({
+                'Referer': 'https://t.me/',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            })
 
         ydl_opts = {
             'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
-            'noplaylist': True,
+            'noplaylist': bool(download_type == 'video_prores' or not is_telegram),
             'progress_hooks': [self.progress_hook],
             'http_headers': headers,
-            'concurrent_fragment_downloads': 16,
+            'concurrent_fragment_downloads': 10,
             'ffmpeg_location': get_ffmpeg_path(),
-            'retries': 200,
-            'fragment_retries': 200,
-            'skip_unavailable_fragments': False,
-            'socket_timeout': 120,
+            'retries': 10,
+            'fragment_retries': 10,
+            'skip_unavailable_fragments': True,
+            'socket_timeout': 60,
             'http_chunk_size': 10485760,
             'quiet': True,
             'no_warnings': True,
         }
+        proxy = self._get_proxy()
+        if proxy:
+            ydl_opts['proxy'] = proxy
         if is_douyin:
             ydl_opts.update({'sleep_interval': 1, 'max_sleep_interval': 3})
 
@@ -759,11 +982,17 @@ class DownloaderApp(ctk.CTk):
                                     'preferredcodec': 'mp3', 'preferredquality': '320'}]
             })
         else:
+            # Target container the user wants for original video
+            target_container = (original_container if download_type == 'video_original'
+                                else ORIGINAL_CONTAINER_DEFAULT)
+            # Always merge to MKV first (universal codec compatibility),
+            # then remux to MP4 afterward if requested. This avoids merge
+            # failures when the source uses codecs that MP4 cannot hold
+            # (e.g. B站 HEVC video + FLAC audio).
             ydl_opts.update({
                 'format': 'bestvideo+bestaudio/best',
                 'merge_output_format': 'mkv',
                 'format_sort': _best_sort,
-                'postprocessor_args': {'merger': ['-c', 'copy']},
             })
 
         BROWSER_PATHS = {
@@ -782,17 +1011,20 @@ class DownloaderApp(ctk.CTk):
         ]
 
         cookie_file = self.cookie_file_path.get().strip()
+        use_browser_cookie = self.use_cookie_var.get()
         attempts = []
+
+        # 1. Explicit cookie file (highest priority if provided)
         if cookie_file and os.path.exists(cookie_file):
             attempts.append(('file', cookie_file))
-        if is_youtube or is_bilibili or is_douyin:
+
+        # 2. Browser cookie extraction (only when user opts in via checkbox)
+        if use_browser_cookie:
             for b in available_browsers:
                 attempts.append(('browser', b))
-            attempts.append(('browser', None))
-        else:
-            attempts.append(('browser', None))
-            for b in available_browsers:
-                attempts.append(('browser', b))
+
+        # 3. Always try without cookies as final fallback
+        attempts.append(('browser', None))
 
         try:
             info, base_filename, last_err = None, None, None
@@ -855,7 +1087,7 @@ class DownloaderApp(ctk.CTk):
 
             # ── Phase 2: subtitle download (separate pass, silent failure) ────
             if info is not None and download_type not in ('audio', 'video_prores') \
-                    and not getattr(self, 'is_cancelled', False):
+                    and not is_telegram and not getattr(self, 'is_cancelled', False):
                 try:
                     if not lang_detected:
                         orig_lang = self._detect_original_audio_lang(info)
@@ -884,6 +1116,15 @@ class DownloaderApp(ctk.CTk):
             if info is None:
                 raise last_err or Exception("所有下载方案均无效")
 
+            # ── MP4 remux (convert from MKV if user selected MP4) ───────────
+            actual_container = ORIGINAL_CONTAINER_DEFAULT
+            if download_type == 'video_original' and target_container == 'mp4' \
+                    and not getattr(self, 'is_cancelled', False):
+                self.status_label.configure(
+                    text="📦 封装为 MP4..." if self.lang == "zh" else "📦 Remuxing to MP4...",
+                    text_color=("#FF9500", "#FF9F0A"))
+                actual_container = self._remux_to_mp4(base_filename)
+
             # ── ProRes transcode ──────────────────────────────────────────────
             if download_type == 'video_prores':
                 orig = next(
@@ -907,10 +1148,20 @@ class DownloaderApp(ctk.CTk):
                 self.status_label.configure(
                     text="✅ Audio extracted as MP3" if self.lang == "en" else "✅ 音频提取完成（MP3）",
                     text_color=("#34C759", "#30D158"))
-            else:
+            elif is_telegram:
                 self.status_label.configure(
-                    text="✅ Done!" if self.lang == "en" else "✅ 下载完成！含字幕轨道（MKV）",
+                    text="✅ Telegram video downloaded!" if self.lang == "en" else "✅ Telegram 视频下载完成！",
                     text_color=("#34C759", "#30D158"))
+            else:
+                if actual_container == 'mkv' and target_container == 'mp4':
+                    self.status_label.configure(
+                        text=self.t("status_done_mkv_fallback"),
+                        text_color=("#34C759", "#30D158"))
+                else:
+                    self.status_label.configure(
+                        text=self.t("status_done_original").format(
+                            container=actual_container.upper()),
+                        text_color=("#34C759", "#30D158"))
 
         except Exception as e:
             self.handle_error(e)
@@ -942,7 +1193,8 @@ class DownloaderApp(ctk.CTk):
                               'Version/17.4 Mobile/15E148 Safari/604.1',
                 'Referer': 'https://www.douyin.com/',
             })
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            opener = self._build_opener()
+            with opener.open(req, timeout=15) as resp:
                 html = resp.read().decode('utf-8', errors='ignore')
 
             m = re.search(r'window\._ROUTER_DATA\s*=\s*({.*?})\s*</script>', html, re.DOTALL)
@@ -981,7 +1233,8 @@ class DownloaderApp(ctk.CTk):
                           'AppleWebKit/605.1.15',
             'Referer': 'https://www.douyin.com/',
         })
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        opener = self._build_opener()
+        with opener.open(req, timeout=120) as resp:
             file_size = int(resp.headers.get('Content-Length', -1))
             downloaded = 0
             with open(filepath, 'wb') as out:
@@ -1034,38 +1287,6 @@ class DownloaderApp(ctk.CTk):
         self.status_label.configure(text=msg, text_color=("#34C759", "#30D158"))
         return True
 
-    # ── you-get fallback (Douyin) ────────────────────────────────────────────
-
-    def _try_you_get(self, url, output_path):
-        bin_path = shutil.which('you-get')
-        if not bin_path:
-            return False
-        try:
-            VIDEO_EXTS = ('.mp4', '.flv', '.webm', '.mkv', '.m4v', '.ts')
-            before = set(os.listdir(output_path)) if os.path.isdir(output_path) else set()
-            r = subprocess.run(
-                [bin_path, '-o', output_path, '--no-caption', url],
-                capture_output=True, text=True, timeout=300)
-            # Check if new video files appeared in output_path
-            after = set(os.listdir(output_path)) if os.path.isdir(output_path) else set()
-            new_files = after - before
-            if any(f.endswith(VIDEO_EXTS) for f in new_files):
-                return True
-            # you-get sometimes ignores -o and writes to cwd instead
-            cwd = os.getcwd()
-            if cwd != output_path:
-                cwd_before = set()  # can't diff, so scan for recent files
-                for f in os.listdir(cwd):
-                    if f.endswith(VIDEO_EXTS):
-                        fp = os.path.join(cwd, f)
-                        if os.path.getmtime(fp) > time.time() - 30:
-                            os.makedirs(output_path, exist_ok=True)
-                            shutil.move(fp, os.path.join(output_path, f))
-                            return True
-            return False
-        except Exception:
-            return False
-
     # ── Error handling ───────────────────────────────────────────────────────
 
     def handle_error(self, e):
@@ -1085,58 +1306,18 @@ class DownloaderApp(ctk.CTk):
                 text_color=("#FF9500", "#FF9F0A"))
         else:
             err_str = str(e)
-            is_fresh = 'fresh' in err_str.lower() and 'cookie' in err_str.lower()
             last_url = getattr(self, '_last_url', '')
-            is_douyin_url = any(d in last_url for d in ['douyin.com', 'v.douyin.com', 'iesdouyin.com', 'tiktok.com'])
-            if is_fresh and is_douyin_url:
-                # you-get already tried and failed; don't auto-refresh, just report
-                self._last_error = err_str
-                msg = ("❌ 抖音下载失败：you-get 和 yt-dlp 均无法获取此视频（点击查看详情）"
+            self._last_error = err_str
+            if self.is_telegram_url(last_url):
+                msg = ("❌ Telegram 下载失败：请确认链接是公开频道的视频消息（点击查看详情）"
                        if self.lang == "zh" else
-                       "❌ Douyin download failed: both you-get and yt-dlp failed (click for details)")
+                       "❌ Telegram download failed: use a public channel video post (click for details)")
                 self.status_label.configure(text=msg, text_color=("#FF3B30", "#FF453A"))
                 return
-            self._last_error = err_str
             summary = err_str.replace('\n', ' ')[:72]
             hint = "（点击查看详情）" if self.lang == "zh" else " (click for details)"
             self.status_label.configure(text=f"❌ {summary}...{hint}",
                                         text_color=("#FF3B30", "#FF453A"))
-
-    def _auto_refresh_cookie_and_retry(self):
-        import webbrowser
-        self._cookie_refresh_attempts = getattr(self, '_cookie_refresh_attempts', 0) + 1
-        if self._cookie_refresh_attempts > 2:
-            self.status_label.configure(
-                text=("❌ 自动刷新失败，请手动导出 cookies.txt（需含 s_v_web_id）" if self.lang == "zh"
-                      else "❌ Auto-refresh failed. Export cookies.txt manually (needs s_v_web_id)."),
-                text_color=("#FF3B30", "#FF453A"))
-            return
-        webbrowser.open('https://www.douyin.com')
-
-        def _countdown():
-            for i in range(12, 0, -1):
-                msg = (f"🔄 已打开抖音刷新 Cookie，{i}s 后重试（第{self._cookie_refresh_attempts}次）"
-                       if self.lang == "zh" else
-                       f"🔄 Opened Douyin to refresh cookies... retrying in {i}s "
-                       f"(attempt {self._cookie_refresh_attempts})")
-                self.after(0, lambda m=msg: self.status_label.configure(
-                    text=m, text_color=("#FF9500", "#FF9F0A")))
-                time.sleep(1)
-            self.after(0, self._retry_last_download)
-
-        threading.Thread(target=_countdown, daemon=True).start()
-
-    def _retry_last_download(self):
-        url = getattr(self, '_last_url', None)
-        dt  = getattr(self, '_last_download_type', None)
-        if not url or not dt:
-            return
-        self.is_cancelled = False
-        self.cleanup_target = None
-        self.download_btn.configure(state="disabled")
-        self.cancel_btn.configure(state="normal")
-        self._start_progress_animation()
-        threading.Thread(target=self.download_media, args=(url, dt), daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -27,11 +27,14 @@ Danload is a free, clean desktop app for downloading videos, audio, and files at
 | Feature | Description |
 |---------|-------------|
 | **Original Quality** | Downloads the highest available quality, no re-encoding |
+| **Original Container** | Choose MKV or MP4 packaging for original-quality video |
 | **ProRes Export** | One-click transcode to Apple ProRes — ready for Final Cut Pro, DaVinci Resolve |
 | **Audio Only** | Extract audio directly |
 | **File Download** | General-purpose URL file downloader |
 | **Browser Cookie** | Access member-only or login-required content via your browser's cookies |
+| **Proxy Support** | Route all downloads through HTTP/SOCKS proxy (Clash, V2Ray, etc.) |
 | **Custom Save Location** | Choose where files are saved |
+| **Persistent Settings** | Remembers your save location and original-video container |
 | **Auto Update** | Notifies you when a new version is available |
 | **Bilingual UI** | Switch between English and Chinese in-app |
 
@@ -50,13 +53,13 @@ Go to [Releases](https://github.com/Danub3/Danload/releases/latest) and download
 ```bash
 git clone https://github.com/Danub3/Danload.git
 cd Danload
-pip install customtkinter yt-dlp pyinstaller
+pip install -r requirements.txt
 pyinstaller Danload.spec
 ```
 
 ### Supported Sites
 
-Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) — supports 1000+ sites including YouTube, Bilibili, Twitter/X, Instagram, TikTok, and more.
+Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) — supports 1000+ sites including YouTube, Bilibili, Twitter/X, Instagram, TikTok, public Telegram video posts, and more.
 
 ---
 
@@ -71,11 +74,14 @@ Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、
 | 功能 | 说明 |
 |------|------|
 | **原画下载** | 下载最高可用画质，不经过二次压缩 |
+| **原画封装** | 原画视频可选择 MKV 或 MP4 封装 |
 | **ProRes 转码** | 一键转码为 Apple ProRes，直接导入 Final Cut Pro、DaVinci Resolve |
 | **纯音频提取** | 直接提取视频音轨 |
 | **文件下载** | 通用 URL 文件下载 |
 | **浏览器 Cookie** | 通过浏览器 Cookie 访问需要登录或会员权限的内容 |
+| **代理支持** | 所有下载均可通过 HTTP/SOCKS 代理（Clash、V2Ray 等） |
 | **自定义保存位置** | 自由选择文件保存路径 |
+| **设置持久化** | 自动记住保存路径和原画封装选择 |
 | **自动更新提示** | 有新版本时自动提醒 |
 | **中英文切换** | 应用内一键切换界面语言 |
 
@@ -94,13 +100,13 @@ Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、
 ```bash
 git clone https://github.com/Danub3/Danload.git
 cd Danload
-pip install customtkinter yt-dlp pyinstaller
+pip install -r requirements.txt
 pyinstaller Danload.spec
 ```
 
 ### 支持网站
 
-基于 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，支持 1000+ 网站，包括 YouTube、Bilibili、Twitter/X、Instagram、抖音等。
+基于 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，支持 1000+ 网站，包括 YouTube、Bilibili、Twitter/X、Instagram、抖音、Telegram 公开频道视频帖等。
 
 ---
 

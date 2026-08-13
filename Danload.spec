@@ -1,10 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 import re
+import customtkinter
+
 with open('app.py', encoding='utf-8') as _f:
     _m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', _f.read())
 APP_VERSION = _m.group(1)
 
-ctk_path = '/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/customtkinter'
+ctk_path = os.path.dirname(customtkinter.__file__)
 
 a = Analysis(
     ['app.py'],
