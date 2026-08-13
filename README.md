@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="icon.png" width="120" alt="Danload Icon"/>
+<img src="assets/icon.png" width="120" alt="Danload Icon"/>
 
 # Danload
 
@@ -48,13 +48,27 @@ Go to [Releases](https://github.com/Danub3/Danload/releases/latest) and download
 
 **Requirements:**
 - Python 3.10+
-- ffmpeg (`brew install ffmpeg` on macOS)
+- ffmpeg
+
+**macOS:**
 
 ```bash
 git clone https://github.com/Danub3/Danload.git
 cd Danload
 pip install -r requirements.txt
+brew install ffmpeg       # if not already installed
 pyinstaller Danload.spec
+```
+
+**Windows:**
+
+```bash
+git clone https://github.com/Danub3/Danload.git
+cd Danload
+pip install -r requirements.txt
+# Download ffmpeg.exe and ffprobe.exe from https://ffmpeg.org/download.html
+# Place them in the project root directory
+pyinstaller Danload-win.spec
 ```
 
 ### Supported Sites
@@ -95,13 +109,27 @@ Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、
 
 **环境要求：**
 - Python 3.10+
-- ffmpeg（Mac 使用 `brew install ffmpeg` 安装）
+- ffmpeg
+
+**macOS：**
 
 ```bash
 git clone https://github.com/Danub3/Danload.git
 cd Danload
 pip install -r requirements.txt
+brew install ffmpeg       # 如未安装
 pyinstaller Danload.spec
+```
+
+**Windows：**
+
+```bash
+git clone https://github.com/Danub3/Danload.git
+cd Danload
+pip install -r requirements.txt
+# 从 https://ffmpeg.org/download.html 下载 ffmpeg.exe 和 ffprobe.exe
+# 放到项目根目录
+pyinstaller Danload-win.spec
 ```
 
 ### 支持网站

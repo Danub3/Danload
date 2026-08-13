@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Danload Windows PyInstaller spec
+# Usage: pyinstaller Danload-win.spec --noconfirm
 import os
 import re
 import customtkinter
@@ -13,8 +15,8 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[
-        ('ffmpeg', '.'),
-        ('ffprobe', '.'),
+        ('ffmpeg.exe', '.'),
+        ('ffprobe.exe', '.'),
     ],
     datas=[
         (ctk_path, 'customtkinter'),
@@ -38,32 +40,21 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,
+    upx=True,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/icon.ico',
 )
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
     strip=False,
-    upx=False,
+    upx=True,
     upx_exclude=[],
     name='Danload',
-)
-app = BUNDLE(
-    coll,
-    name='Danload.app',
-    icon='assets/icon.icns',
-    bundle_identifier='com.daniel.danload',
-    info_plist={
-        'NSHighResolutionCapable': True,
-        'CFBundleShortVersionString': APP_VERSION,
-        'CFBundleName': 'Danload',
-        'CFBundleDisplayName': 'Danload',
-    },
 )

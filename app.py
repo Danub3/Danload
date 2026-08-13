@@ -14,8 +14,9 @@ import time
 
 APP_VERSION = "1.2.0"
 
-_extra_paths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
-os.environ['PATH'] = ':'.join(_extra_paths + [p for p in os.environ.get('PATH', '').split(':') if p not in _extra_paths])
+if sys.platform != 'win32':
+    _extra_paths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+    os.environ['PATH'] = ':'.join(_extra_paths + [p for p in os.environ.get('PATH', '').split(':') if p not in _extra_paths])
 
 class DummyOutput:
     def write(self, *args, **kwargs): pass
@@ -49,14 +50,36 @@ SETTINGS_PATH = get_settings_path()
 
 
 def get_ffmpeg_path():
+    _name = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
     if hasattr(sys, '_MEIPASS'):
-        p = os.path.join(sys._MEIPASS, 'ffmpeg')
+        p = os.path.join(sys._MEIPASS, _name)
         if os.path.exists(p): return p
     main_dir = os.path.dirname(sys.executable)
     for rel in ('', os.path.join('..', 'Frameworks')):
-        p = os.path.normpath(os.path.join(main_dir, rel, 'ffmpeg'))
+        p = os.path.normpath(os.path.join(main_dir, rel, _name))
         if os.path.exists(p): return p
-    return '/opt/homebrew/bin/ffmpeg'
+    if sys.platform == 'darwin':
+        return '/opt/homebrew/bin/ffmpeg'
+    elif os.name == 'nt':
+        return 'ffmpeg.exe'
+    return 'ffmpeg'
+
+
+def get_prores_encoder():
+    """Return the appropriate ProRes encoder for the current platform."""
+    return 'prores_videotoolbox' if sys.platform == 'darwin' else 'prores_ks'
+
+
+def _get_user_agent():
+    """Return a platform-appropriate User-Agent string."""
+    if sys.platform == 'darwin':
+        return ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/123.0.0.0 Safari/537.36')
+    else:
+        return ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/123.0.0.0 Safari/537.36')
 
 
 class DownloaderApp(ctk.CTk):
@@ -78,7 +101,7 @@ class DownloaderApp(ctk.CTk):
             "zh": {
                 "title": "Danload", "subtitle": "全能媒体提取引擎",
                 "placeholder": "粘贴视频或文件链接...", "status_wait": "等待输入",
-                "btn_start": "开始下载", "btn_cancel": "取消", "btn_open": "打开 Finder",
+                "btn_start": "开始下载", "btn_cancel": "取消", "btn_open": "打开文件夹" if os.name == 'nt' else "打开 Finder",
                 "opt_orig": "原画视频", "opt_prores": "ProRes",
                 "opt_audio": "纯音频", "opt_general": "文件下载",
                 "opt_cookie": "使用浏览器 Cookie", "lang_switch": "EN",
@@ -97,7 +120,7 @@ class DownloaderApp(ctk.CTk):
             "en": {
                 "title": "Danload", "subtitle": "Universal Media Extractor",
                 "placeholder": "Paste video or file URL...", "status_wait": "Waiting for input",
-                "btn_start": "Download", "btn_cancel": "Cancel", "btn_open": "Open Finder",
+                "btn_start": "Download", "btn_cancel": "Cancel", "btn_open": "Open Folder" if os.name == 'nt' else "Open Finder",
                 "opt_orig": "Original", "opt_prores": "ProRes",
                 "opt_audio": "Audio", "opt_general": "File",
                 "opt_cookie": "Use Browser Cookie", "lang_switch": "中文",
@@ -692,7 +715,12 @@ class DownloaderApp(ctk.CTk):
     def open_download_folder(self):
         os.makedirs(self.download_folder, exist_ok=True)
         try:
-            subprocess.run(["open", self.download_folder])
+            if sys.platform == 'darwin':
+                subprocess.run(["open", self.download_folder])
+            elif os.name == 'nt':
+                os.startfile(self.download_folder)
+            else:
+                subprocess.run(["xdg-open", self.download_folder])
         except Exception:
             pass
 
@@ -932,9 +960,7 @@ class DownloaderApp(ctk.CTk):
                 text_color=("#FF9500", "#FF9F0A"))
 
         headers = {
-            'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                           'AppleWebKit/537.36 (KHTML, like Gecko) '
-                           'Chrome/123.0.0.0 Safari/537.36'),
+            'User-Agent': _get_user_agent(),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         }
@@ -995,13 +1021,29 @@ class DownloaderApp(ctk.CTk):
                 'format_sort': _best_sort,
             })
 
-        BROWSER_PATHS = {
-            'safari': '/Applications/Safari.app',
-            'chrome': '/Applications/Google Chrome.app',
-            'firefox': '/Applications/Firefox.app',
-        }
-        available_browsers = [b for b in ['safari', 'chrome', 'firefox']
-                               if os.path.exists(BROWSER_PATHS[b])]
+        if sys.platform == 'darwin':
+            BROWSER_PATHS = {
+                'safari': '/Applications/Safari.app',
+                'chrome': '/Applications/Google Chrome.app',
+                'firefox': '/Applications/Firefox.app',
+            }
+            BROWSER_ORDER = ['safari', 'chrome', 'firefox']
+        elif os.name == 'nt':
+            _pf = os.environ.get('ProgramFiles', 'C:\\Program Files')
+            _pfx86 = os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)')
+            BROWSER_PATHS = {
+                'chrome': os.path.join(_pf, 'Google\\Chrome\\Application\\chrome.exe'),
+                'firefox': os.path.join(_pf, 'Mozilla Firefox\\firefox.exe'),
+                'edge': os.path.join(_pfx86, 'Microsoft\\Edge\\Application\\msedge.exe'),
+            }
+            BROWSER_ORDER = ['chrome', 'firefox', 'edge']
+        else:
+            BROWSER_PATHS = {
+                'chrome': '/usr/bin/google-chrome',
+                'firefox': '/usr/bin/firefox',
+            }
+            BROWSER_ORDER = ['chrome', 'firefox']
+        available_browsers = [b for b in BROWSER_ORDER if os.path.exists(BROWSER_PATHS.get(b, ''))]
 
         COOKIE_ERR = [
             'cookie', 'fresh', 'login', 'sign check', 'sign in', 'not a bot',
@@ -1136,7 +1178,7 @@ class DownloaderApp(ctk.CTk):
                         text_color=("#FF9500", "#FF9F0A"))
                     subprocess.run([
                         get_ffmpeg_path(), '-y', '-i', orig,
-                        '-c:v', 'prores_videotoolbox', '-profile:v', '2',
+                        '-c:v', get_prores_encoder(), '-profile:v', '2',
                         '-c:a', 'aac', '-b:a', '320k', '-map_metadata', '0',
                         f"{base_filename}.mov"], check=True)
                     os.remove(orig)
@@ -1275,7 +1317,7 @@ class DownloaderApp(ctk.CTk):
                 text_color=("#FF9500", "#FF9F0A"))
             subprocess.run([
                 get_ffmpeg_path(), '-y', '-i', filepath,
-                '-c:v', 'prores_videotoolbox', '-profile:v', '2',
+                '-c:v', get_prores_encoder(), '-profile:v', '2',
                 '-c:a', 'aac', '-b:a', '320k', mov_path
             ], check=True, capture_output=True)
             os.remove(filepath)
