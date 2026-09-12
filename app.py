@@ -6,13 +6,26 @@ import sys
 import re
 import subprocess
 import glob
+import logging
+import queue
+import shutil
+from logging.handlers import RotatingFileHandler
 import urllib.request
 import json
 import webbrowser
 from urllib.parse import urlparse, unquote
 import time
 
-APP_VERSION = "1.2.0"
+from danload_core import (
+    choose_subtitle_languages,
+    highest_video_summary,
+    progress_fraction,
+    sanitize_diagnostic,
+    selected_format_summary,
+    stage_progress,
+)
+
+APP_VERSION = "1.2.1"
 
 if sys.platform != 'win32':
     _extra_paths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
@@ -47,6 +60,7 @@ def get_settings_path():
 
 
 SETTINGS_PATH = get_settings_path()
+LOG_PATH = os.path.join(os.path.dirname(SETTINGS_PATH), 'danload.log')
 
 
 def get_ffmpeg_path():
@@ -65,27 +79,66 @@ def get_ffmpeg_path():
     return 'ffmpeg'
 
 
+def get_js_runtimes():
+    """Return the first bundled or installed JS runtime supported by yt-dlp."""
+    executable_names = ('deno.exe', 'deno') if os.name == 'nt' else ('deno',)
+    search_roots = []
+    if hasattr(sys, '_MEIPASS'):
+        search_roots.append(sys._MEIPASS)
+    main_dir = os.path.dirname(sys.executable)
+    search_roots.extend((main_dir, os.path.normpath(os.path.join(main_dir, '..', 'Frameworks'))))
+    for name in executable_names:
+        for root in search_roots:
+            path = os.path.join(root, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return {'deno': {'path': path}}
+
+    deno = shutil.which('deno')
+    if deno:
+        return {'deno': {'path': deno}}
+    node = shutil.which('node')
+    if node:
+        return {'node': {'path': node}}
+    return {'deno': {}}
+
+
 def get_prores_encoder():
     """Return the appropriate ProRes encoder for the current platform."""
     return 'prores_videotoolbox' if sys.platform == 'darwin' else 'prores_ks'
 
 
-def _get_user_agent():
-    """Return a platform-appropriate User-Agent string."""
-    if sys.platform == 'darwin':
-        return ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/123.0.0.0 Safari/537.36')
-    else:
-        return ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/123.0.0.0 Safari/537.36')
+class YDLLogger:
+    def __init__(self, app):
+        self.app = app
+
+    def debug(self, message):
+        pass
+
+    def info(self, message):
+        pass
+
+    def warning(self, message):
+        self.app._log_diagnostic('yt-dlp warning: %s', message)
+
+    def error(self, message):
+        self.app._log_diagnostic('yt-dlp error: %s', message)
 
 
 class DownloaderApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self._last_error = ""
+        self._logger = logging.getLogger(f'Danload.{id(self)}')
+        self._logger.setLevel(logging.INFO)
+        self._logger.propagate = False
+        try:
+            os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+            handler = RotatingFileHandler(
+                LOG_PATH, maxBytes=512 * 1024, backupCount=2, encoding='utf-8')
+            handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+            self._logger.addHandler(handler)
+        except OSError:
+            self._logger.addHandler(logging.NullHandler())
         self.lang = "zh"
         self.download_folder = DEFAULT_DOWNLOAD_PATH
         self.original_container = ORIGINAL_CONTAINER_DEFAULT
@@ -95,6 +148,9 @@ class DownloaderApp(ctk.CTk):
         # Smooth progress state (main-thread animation)
         self._progress_target = 0.0
         self._progress_displayed = 0.0
+        self._progress_stage = 'parse'
+        self._progress_lock = threading.Lock()
+        self._ui_queue = queue.SimpleQueue()
         self._downloading = False
 
         self.i18n = {
@@ -103,15 +159,19 @@ class DownloaderApp(ctk.CTk):
                 "placeholder": "粘贴视频或文件链接...", "status_wait": "等待输入",
                 "btn_start": "开始下载", "btn_cancel": "取消", "btn_open": "打开文件夹" if os.name == 'nt' else "打开 Finder",
                 "opt_orig": "原画视频", "opt_prores": "ProRes",
-                "opt_audio": "纯音频", "opt_general": "文件下载",
+                "opt_audio": "纯音频", "opt_subtitles": "字幕", "opt_general": "文件下载",
                 "opt_cookie": "使用浏览器 Cookie", "lang_switch": "EN",
                 "err_empty": "请先粘贴链接", "err_invalid": "未检测到有效链接",
+                "err_no_subtitles": "没有找到符合所选语言的字幕",
                 "err_telegram_unsupported": "Danload 目前支持公开 t.me 频道视频链接；Telegram Web、私有群和受限内容不能直接粘贴下载。",
                 "btn_browse": "选择", "label_folder": "保存位置",
-                "label_container": "原画封装",
+                "label_container": "原画封装", "label_subtitle": "字幕语言 / 格式",
+                "sub_original_english": "原语言 + 英语", "sub_original": "原语言",
+                "sub_english": "英语", "sub_automatic": "自动字幕",
                 "label_proxy": "代理地址", "placeholder_proxy": "http://127.0.0.1:7890（可选）",
                 "status_done_original": "✅ 下载完成！（{container} 封装）",
                 "status_done_mkv_fallback": "✅ 下载完成！（MKV · 原画编码不兼容 MP4）",
+                "status_done_subtitles": "✅ 字幕下载完成！（{languages} · {format}）",
                 "update_title": "发现新版本",
                 "update_msg": "Danload {ver} 已发布，当前版本 {cur}。\n\n更新内容：\n{notes}",
                 "update_btn": "前往下载",
@@ -122,15 +182,19 @@ class DownloaderApp(ctk.CTk):
                 "placeholder": "Paste video or file URL...", "status_wait": "Waiting for input",
                 "btn_start": "Download", "btn_cancel": "Cancel", "btn_open": "Open Folder" if os.name == 'nt' else "Open Finder",
                 "opt_orig": "Original", "opt_prores": "ProRes",
-                "opt_audio": "Audio", "opt_general": "File",
+                "opt_audio": "Audio", "opt_subtitles": "Subtitles", "opt_general": "File",
                 "opt_cookie": "Use Browser Cookie", "lang_switch": "中文",
                 "err_empty": "Please paste a URL first", "err_invalid": "No valid URL detected",
+                "err_no_subtitles": "No subtitles matched the selected language",
                 "err_telegram_unsupported": "Danload currently supports public t.me channel video links. Telegram Web, private chats, and restricted content cannot be pasted directly.",
                 "btn_browse": "Browse", "label_folder": "Save to",
-                "label_container": "Original container",
+                "label_container": "Original container", "label_subtitle": "Subtitle language / format",
+                "sub_original_english": "Original + English", "sub_original": "Original",
+                "sub_english": "English", "sub_automatic": "Automatic",
                 "label_proxy": "Proxy", "placeholder_proxy": "http://127.0.0.1:7890 (optional)",
                 "status_done_original": "✅ Done! ({container} container)",
                 "status_done_mkv_fallback": "✅ Done! (MKV - codec incompatible with MP4)",
+                "status_done_subtitles": "✅ Subtitles downloaded! ({languages} · {format})",
                 "update_title": "New Version Available",
                 "update_msg": "Danload {ver} is available (you have {cur}).\n\nWhat's new:\n{notes}",
                 "update_btn": "Download",
@@ -147,10 +211,18 @@ class DownloaderApp(ctk.CTk):
         self.use_cookie_var = ctk.BooleanVar(value=False)
         self.proxy_var = ctk.StringVar(value=self.proxy)
         self.original_container_var = ctk.StringVar(value=self.original_container.upper())
+        self.subtitle_policy = 'original_english'
+        self.subtitle_format_var = ctk.StringVar(value='SRT')
 
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.build_main_ui()
         self.main_frame.pack(fill="both", expand=True, padx=24, pady=14)
+        self.after(20, self._poll_ui_queue)
+
+        self._log_diagnostic(
+            'startup app=%s yt-dlp=%s js_runtime=%s', APP_VERSION,
+            yt_dlp.version.__version__, next(iter(get_js_runtimes())),
+        )
 
         threading.Thread(target=self.check_for_updates, daemon=True).start()
 
@@ -218,7 +290,7 @@ class DownloaderApp(ctk.CTk):
             latest = data.get("tag_name", "").lstrip("v")
             notes = data.get("body", "").strip()
             if latest and self._version_tuple(latest) > self._version_tuple(APP_VERSION):
-                self.after(0, lambda: self._show_update_dialog(latest, notes))
+                self._run_on_ui(lambda: self._show_update_dialog(latest, notes))
         except Exception:
             pass
 
@@ -324,30 +396,44 @@ class DownloaderApp(ctk.CTk):
 
         self.eggs = {}
         for val, key in [("video_original", "opt_orig"), ("video_prores", "opt_prores"),
-                         ("audio", "opt_audio"), ("general_file", "opt_general")]:
+                         ("audio", "opt_audio"), ("subtitles", "opt_subtitles"),
+                         ("general_file", "opt_general")]:
             self._make_egg(val, key)
         self.select_egg("video_original")
 
         # Original Video Container
-        container_frame = ctk.CTkFrame(
+        self.container_frame = ctk.CTkFrame(
             self.main_frame,
             fg_color=("#FFFFFF", "#2C2C2E"), corner_radius=10,
             border_width=1, border_color=("#D1D1D6", "#3A3A3C"))
-        container_frame.pack(fill="x", pady=(8, 0))
+        self.container_frame.pack(fill="x", pady=(8, 0))
 
         self.container_key_label = ctk.CTkLabel(
-            container_frame, text=self.t("label_container"),
+            self.container_frame, text=self.t("label_container"),
             font=("Helvetica Neue", 12), text_color=("#6E6E73", "#8E8E93"))
         self.container_key_label.pack(side="left", padx=(14, 8), pady=9)
 
         self.container_segment = ctk.CTkSegmentedButton(
-            container_frame,
+            self.container_frame,
             values=list(ORIGINAL_CONTAINER_VALUES),
             variable=self.original_container_var,
             width=150, height=28,
             font=("Helvetica Neue", 12),
             command=self.set_original_container)
         self.container_segment.pack(side="right", padx=(4, 14), pady=9)
+
+        self.subtitle_controls = ctk.CTkFrame(self.container_frame, fg_color="transparent")
+        self.subtitle_format_segment = ctk.CTkSegmentedButton(
+            self.subtitle_controls, values=['SRT', 'VTT'],
+            variable=self.subtitle_format_var, width=100, height=28,
+            font=("Helvetica Neue", 12))
+        self.subtitle_format_segment.pack(side="right")
+        self.subtitle_language_menu = ctk.CTkOptionMenu(
+            self.subtitle_controls, values=self._subtitle_policy_labels(),
+            width=170, height=28, font=("Helvetica Neue", 12),
+            command=self.set_subtitle_policy)
+        self.subtitle_language_menu.set(self.t('sub_original_english'))
+        self.subtitle_language_menu.pack(side="right", padx=(0, 8))
 
         # Save Location
         folder_frame = ctk.CTkFrame(
@@ -493,7 +579,16 @@ class DownloaderApp(ctk.CTk):
         self.proxy_entry.configure(placeholder_text=self.t("placeholder_proxy"))
         self.folder_key_label.configure(text=self.t("label_folder"))
         self.folder_btn.configure(text=self.t("btn_browse"))
-        self.container_key_label.configure(text=self.t("label_container"))
+        self.container_key_label.configure(
+            text=self.t('label_subtitle' if self.option_var.get() == 'subtitles'
+                        else 'label_container'))
+        self.subtitle_language_menu.configure(values=self._subtitle_policy_labels())
+        self.subtitle_language_menu.set(self.t({
+            'original_english': 'sub_original_english',
+            'original': 'sub_original',
+            'english': 'sub_english',
+            'automatic': 'sub_automatic',
+        }[self.subtitle_policy]))
         for val, btn in self.eggs.items():
             emoji = btn.cget("text").split(" ")[0]
             btn.configure(text=f"{emoji} {self.t(btn.text_key)}")
@@ -505,6 +600,7 @@ class DownloaderApp(ctk.CTk):
     def _make_egg(self, value, text_key):
         btn = ctk.CTkButton(
             self.egg_container, text=f"🥚 {self.t(text_key)}",
+            width=100,
             fg_color="transparent", text_color=("#6E6E73", "#8E8E93"),
             hover_color=("#F5F5F7", "#3A3A3C"),
             font=("Helvetica Neue", 13), corner_radius=8,
@@ -530,6 +626,25 @@ class DownloaderApp(ctk.CTk):
                 btn.configure(text=f"🥚 {self.t(btn.text_key)}",
                               text_color=("#6E6E73", "#8E8E93"),
                               font=("Helvetica Neue", 13, "normal"))
+        if hasattr(self, 'container_segment'):
+            if selected_value == 'subtitles':
+                self.container_key_label.configure(text=self.t('label_subtitle'))
+                self.container_segment.pack_forget()
+                self.subtitle_controls.pack(side='right', padx=(4, 14), pady=9)
+            else:
+                self.container_key_label.configure(text=self.t('label_container'))
+                self.subtitle_controls.pack_forget()
+                self.container_segment.pack(side='right', padx=(4, 14), pady=9)
+
+    def _subtitle_policy_labels(self):
+        return [self.t(key) for key in (
+            'sub_original_english', 'sub_original', 'sub_english', 'sub_automatic')]
+
+    def set_subtitle_policy(self, value):
+        values = self._subtitle_policy_labels()
+        policies = ('original_english', 'original', 'english', 'automatic')
+        if value in values:
+            self.subtitle_policy = policies[values.index(value)]
 
     def set_original_container(self, value):
         container = (value or '').lower()
@@ -545,6 +660,7 @@ class DownloaderApp(ctk.CTk):
         self._downloading = True
         self._progress_target = 0.0
         self._progress_displayed = 0.0
+        self._progress_stage = 'parse'
         self.progress_bar.set(0)
         self._tick_progress()
 
@@ -558,6 +674,37 @@ class DownloaderApp(ctk.CTk):
             self.progress_bar.set(max(0.0, min(1.0, self._progress_displayed)))
         self.after(16, self._tick_progress)
 
+    def _advance_progress(self, stage, fraction):
+        with self._progress_lock:
+            self._progress_stage = stage
+            self._progress_target = stage_progress(self._progress_target, stage, fraction)
+            return self._progress_target
+
+    def _run_on_ui(self, callback):
+        if threading.current_thread() is threading.main_thread():
+            callback()
+        else:
+            self._ui_queue.put(callback)
+
+    def _poll_ui_queue(self):
+        try:
+            while True:
+                self._ui_queue.get_nowait()()
+        except queue.Empty:
+            pass
+        self.after(20, self._poll_ui_queue)
+
+    def _set_status(self, text, text_color):
+        def update():
+            self.status_label.configure(text=text, text_color=text_color)
+        self._run_on_ui(update)
+
+    def _log_diagnostic(self, message, *args):
+        if not self._logger:
+            return
+        sanitized = tuple(sanitize_diagnostic(value) for value in args)
+        self._logger.info(message, *sanitized)
+
     # ── Helpers ─────────────────────────────────────────────────────────────
 
     def _get_proxy(self):
@@ -566,6 +713,20 @@ class DownloaderApp(ctk.CTk):
         if not p:
             p = getattr(self, 'proxy', '').strip()
         return p if p else None
+
+    def _format_diagnostic(self, info, prefix):
+        self._log_diagnostic(
+            '%s extractor=%s candidate=%s selected=%s', prefix,
+            info.get('extractor_key') or info.get('extractor') or 'unknown',
+            highest_video_summary(info), selected_format_summary(info),
+        )
+
+    @staticmethod
+    def _is_http_403(error):
+        text = str(error).lower()
+        return any(marker in text for marker in (
+            'http error 403', 'http 403', '403: forbidden', '403 forbidden',
+            'server returned 403', 'status code 403'))
 
     def _build_opener(self):
         """Build a urllib opener that honours the configured proxy."""
@@ -629,35 +790,6 @@ class DownloaderApp(ctk.CTk):
         if meta_lang and meta_lang not in ('und',):
             return meta_lang[:2]
         return 'en'
-
-    def _choose_subtitle_langs(self, info, orig_lang='en'):
-        """Return subtitle language codes matching the audio track rule.
-
-        * English original  → ``['en']``
-        * Non-English original → ``[orig_lang, 'en']`` (no duplicates)
-        """
-        all_subs = set((info.get('subtitles') or {}).keys())
-        all_auto = set((info.get('automatic_captions') or {}).keys())
-        available = all_subs | all_auto
-
-        picks = []
-
-        # 1. Original language subtitle (only if non-English)
-        if orig_lang != 'en':
-            matches = sorted(
-                [l for l in available if l.lower().startswith(orig_lang)], key=len)
-            if matches:
-                picks.append(matches[0])
-
-        # 2. English subtitle (always)
-        en_matches = sorted(
-            [l for l in available if l.lower().startswith('en')], key=len)
-        if en_matches:
-            picks.append(en_matches[0])
-        else:
-            picks.append('en')
-
-        return picks if picks else ['en']
 
     def _remux_to_mp4(self, base_filename):
         """Remux the downloaded file to MP4 using ``-c copy``.
@@ -743,22 +875,24 @@ class DownloaderApp(ctk.CTk):
 
         if d['status'] == 'downloading':
             try:
-                pct_str = d['_percent_str'].strip().replace('%', '')
-                pct = float(re.sub(r'\x1b\[[0-9;]*m', '', pct_str)) / 100.0
-                # Only advance forward — prevents backward-jump artifacts
-                if pct > self._progress_target:
-                    self._progress_target = pct
+                pct = progress_fraction(d)
+                stage = self._progress_stage
+                overall = self._advance_progress(stage, pct)
                 speed = d.get('_speed_str', '—')
-                msg = (f"Downloading {pct*100:.1f}%  ·  {speed}" if self.lang == "en"
-                       else f"下载中 {pct*100:.1f}%  ·  {speed}")
-                self.status_label.configure(text=msg, text_color=("#0071E3", "#0A84FF"))
+                if stage == 'subtitle':
+                    msg = (f"Subtitles {overall*100:.1f}%  ·  {speed}" if self.lang == "en"
+                           else f"字幕下载 {overall*100:.1f}%  ·  {speed}")
+                else:
+                    msg = (f"Downloading {overall*100:.1f}%  ·  {speed}" if self.lang == "en"
+                           else f"下载中 {overall*100:.1f}%  ·  {speed}")
+                self._set_status(msg, ("#0071E3", "#0A84FF"))
             except Exception:
                 pass
 
         elif d['status'] == 'finished':
-            self._progress_target = 1.0   # snap to full on raw-download complete
+            self._advance_progress(self._progress_stage, 1.0)
             msg = "Processing..." if self.lang == "en" else "处理中..."
-            self.status_label.configure(text=msg, text_color=("#FF9500", "#FF9F0A"))
+            self._set_status(msg, ("#FF9500", "#FF9F0A"))
 
     # ── URL normalisation ───────────────────────────────────────────────────
 
@@ -854,6 +988,13 @@ class DownloaderApp(ctk.CTk):
         self.cleanup_target = None
         download_type = self.option_var.get()
         original_container = self._selected_original_container()
+        request_config = {
+            'cookie_file': self.cookie_file_path.get().strip(),
+            'use_browser_cookie': self.use_cookie_var.get(),
+            'proxy': self._get_proxy(),
+            'subtitle_policy': self.subtitle_policy,
+            'subtitle_format': self.subtitle_format_var.get().lower(),
+        }
         self._last_url = url
         self._last_error = ""
 
@@ -866,17 +1007,23 @@ class DownloaderApp(ctk.CTk):
 
         target = self.download_general_file if download_type == 'general_file' else self.download_media
         args = ((url,) if download_type == 'general_file'
-                else (url, download_type, original_container))
+                else (url, download_type, original_container, request_config))
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def reset_ui_state(self):
         self._downloading = False
-        self._progress_target = 0.0
-        self._progress_displayed = 0.0
-        self.progress_bar.set(0)
-        self.download_btn.configure(state="normal")
-        self.cancel_btn.configure(state="disabled")
-        self.is_cancelled = False
+        def reset():
+            if self._progress_target >= 1.0:
+                self._progress_displayed = 1.0
+                self.progress_bar.set(1.0)
+            else:
+                self._progress_target = 0.0
+                self._progress_displayed = 0.0
+                self.progress_bar.set(0)
+            self.download_btn.configure(state="normal")
+            self.cancel_btn.configure(state="disabled")
+            self.is_cancelled = False
+        self._run_on_ui(reset)
 
     # ── General file download ────────────────────────────────────────────────
 
@@ -884,13 +1031,14 @@ class DownloaderApp(ctk.CTk):
         output_path = self.download_folder
         os.makedirs(output_path, exist_ok=True)
         try:
+            self._progress_stage = 'media'
             file_name = unquote(os.path.basename(urlparse(url).path)) or "Danload_File"
             if "." not in file_name:
                 file_name = "Danload_File"
             filepath = os.path.join(output_path, file_name)
             self.cleanup_target = filepath
             msg = "🚀 Connecting..." if self.lang == "en" else "🚀 正在建立连接..."
-            self.status_label.configure(text=msg, text_color=("#34C759", "#30D158"))
+            self._set_status(text=msg, text_color=("#34C759", "#30D158"))
 
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             opener = self._build_opener()
@@ -907,16 +1055,16 @@ class DownloaderApp(ctk.CTk):
                     out.write(buf)
                     if file_size > 0:
                         pct = downloaded / file_size
-                        if pct > self._progress_target:
-                            self._progress_target = pct
+                        overall = self._advance_progress('media', pct)
                         dl_mb, tot_mb = downloaded / 1048576, file_size / 1048576
-                        msg = (f"Downloading {pct*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB"
+                        msg = (f"Downloading {overall*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB"
                                if self.lang == "en" else
-                               f"下载中 {pct*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB")
-                        self.status_label.configure(text=msg, text_color=("#0071E3", "#0A84FF"))
+                               f"下载中 {overall*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB")
+                        self._set_status(text=msg, text_color=("#0071E3", "#0A84FF"))
 
             msg = "✅ File downloaded!" if self.lang == "en" else "✅ 文件下载完成！"
-            self.status_label.configure(text=msg, text_color=("#34C759", "#30D158"))
+            self._advance_progress('complete', 1.0)
+            self._set_status(text=msg, text_color=("#34C759", "#30D158"))
         except Exception as e:
             self.handle_error(e)
         finally:
@@ -924,48 +1072,149 @@ class DownloaderApp(ctk.CTk):
 
     # ── Media download ───────────────────────────────────────────────────────
 
-    def download_media(self, url, download_type, original_container=None):
+    def _available_browsers(self):
+        if sys.platform == 'darwin':
+            paths = {
+                'safari': '/Applications/Safari.app',
+                'chrome': '/Applications/Google Chrome.app',
+                'firefox': '/Applications/Firefox.app',
+            }
+            order = ('safari', 'chrome', 'firefox')
+        elif os.name == 'nt':
+            program_files = os.environ.get('ProgramFiles', r'C:\Program Files')
+            program_files_x86 = os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')
+            paths = {
+                'chrome': os.path.join(program_files, r'Google\Chrome\Application\chrome.exe'),
+                'firefox': os.path.join(program_files, r'Mozilla Firefox\firefox.exe'),
+                'edge': os.path.join(program_files_x86, r'Microsoft\Edge\Application\msedge.exe'),
+            }
+            order = ('chrome', 'firefox', 'edge')
+        else:
+            paths = {'chrome': '/usr/bin/google-chrome', 'firefox': '/usr/bin/firefox'}
+            order = ('chrome', 'firefox')
+        return [browser for browser in order if os.path.exists(paths[browser])]
+
+    def _download_attempts(self, request_config):
+        cookie_file = request_config.get('cookie_file') or ''
+        if cookie_file:
+            if not os.path.isfile(cookie_file):
+                raise FileNotFoundError(f'Cookie file not found: {cookie_file}')
+            credentials = [('file', cookie_file)]
+        elif request_config.get('use_browser_cookie'):
+            browsers = self._available_browsers()
+            if not browsers:
+                raise RuntimeError('No supported browser was found for Cookie extraction')
+            credentials = [('browser', browser) for browser in browsers]
+        else:
+            credentials = [('anonymous', None)]
+
+        attempts = []
+        for credential_type, credential_value in credentials:
+            attempts.append((credential_type, credential_value, False))
+            attempts.append((credential_type, credential_value, True))
+        return attempts
+
+    @staticmethod
+    def _attempt_options(base_options, credential_type, credential_value, conservative):
+        options = base_options.copy()
+        if 'http_headers' in options:
+            options['http_headers'] = options['http_headers'].copy()
+        if credential_type == 'file':
+            options['cookiefile'] = credential_value
+        elif credential_type == 'browser':
+            options['cookiesfrombrowser'] = (credential_value,)
+        if conservative:
+            options['concurrent_fragment_downloads'] = 1
+            options['retries'] = 3
+            options['fragment_retries'] = 3
+        return options
+
+    def _download_subtitles_only(self, url, options, metadata, request_config):
+        original_language = self._detect_original_audio_lang(metadata)
+        languages = choose_subtitle_languages(
+            metadata, original_language, request_config.get('subtitle_policy', 'original_english'))
+        if not languages:
+            raise RuntimeError(self.t('err_no_subtitles'))
+
+        subtitle_format = request_config.get('subtitle_format', 'srt')
+        if subtitle_format not in ('srt', 'vtt'):
+            subtitle_format = 'srt'
+        subtitle_options = options.copy()
+        for key in ('format', 'merge_output_format', 'audio_multistreams'):
+            subtitle_options.pop(key, None)
+        subtitle_options.update({
+            'skip_download': True,
+            'writesubtitles': request_config.get('subtitle_policy') != 'automatic',
+            'writeautomaticsub': True,
+            'subtitleslangs': languages,
+            'subtitlesformat': f'{subtitle_format}/best',
+            'overwrites': False,
+            'postprocessors': [{
+                'key': 'FFmpegSubtitlesConvertor',
+                'format': subtitle_format,
+            }],
+        })
+        self._progress_stage = 'subtitle'
+        self._set_status(
+            'Downloading subtitles...' if self.lang == 'en' else '正在下载字幕...',
+            ("#0071E3", "#0A84FF"))
+        with yt_dlp.YoutubeDL(subtitle_options) as ydl:
+            result = ydl.extract_info(url, download=True)
+        self._advance_progress('subtitle_finalize', 1.0)
+        self._log_diagnostic(
+            'subtitles extractor=%s languages=%s format=%s manual=%s automatic=%s',
+            result.get('extractor_key') or result.get('extractor') or 'unknown',
+            ','.join(languages), subtitle_format,
+            bool(metadata.get('subtitles')), bool(metadata.get('automatic_captions')))
+        self._advance_progress('complete', 1.0)
+        self._set_status(
+            self.t('status_done_subtitles').format(
+                languages=', '.join(languages), format=subtitle_format.upper()),
+            ("#34C759", "#30D158"))
+
+    def download_media(self, url, download_type, original_container=None, request_config=None):
+        request_config = request_config or {}
         output_path = self.download_folder
         os.makedirs(output_path, exist_ok=True)
         if original_container not in ('mkv', 'mp4'):
             original_container = ORIGINAL_CONTAINER_DEFAULT
 
-        is_douyin   = any(d in url for d in ['douyin.com', 'v.douyin.com', 'iesdouyin.com', 'tiktok.com'])
+        host = urlparse(url).netloc.lower().split(':', 1)[0].removeprefix('www.')
+        is_douyin   = any(d in host for d in ['douyin.com', 'iesdouyin.com', 'tiktok.com'])
         is_telegram = self.is_telegram_url(url)
+        is_bilibili = host == 'b23.tv' or host.endswith('.bilibili.com') or host == 'bilibili.com'
 
         # Resolve Douyin short links first
         if is_douyin and 'v.douyin.com' in url:
-            self.status_label.configure(
+            self._set_status(
                 text="🔗 正在解析抖音短链..." if self.lang == "zh" else "🔗 Resolving short URL...",
                 text_color=("#6E6E73", "#8E8E93"))
             url = self.resolve_douyin_short_url(url)
-            self.after(0, lambda u=url: (self.url_entry.delete(0, 'end'),
-                                         self.url_entry.insert(0, u)))
+            self._run_on_ui(lambda u=url: (self.url_entry.delete(0, 'end'),
+                                           self.url_entry.insert(0, u)))
 
         # For Douyin, use native API download (no cookies needed)
-        if is_douyin:
-            self.status_label.configure(
+        if is_douyin and download_type != 'subtitles':
+            self._set_status(
                 text="🔄 正在解析抖音视频..." if self.lang == "zh" else "🔄 Fetching Douyin video...",
                 text_color=("#FF9500", "#FF9F0A"))
             if self._try_douyin_native(url, output_path, download_type):
+                self.reset_ui_state()
                 return
             # Native failed, fall through to yt-dlp as last resort
-            self.status_label.configure(
+            self._set_status(
                 text="🔄 备用方案下载中..." if self.lang == "zh" else "🔄 Trying fallback...",
                 text_color=("#FF9500", "#FF9F0A"))
 
         if is_telegram:
-            self.status_label.configure(
+            self._set_status(
                 text="🔄 正在解析 Telegram 视频..." if self.lang == "zh" else "🔄 Fetching Telegram video...",
                 text_color=("#FF9500", "#FF9F0A"))
 
-        headers = {
-            'User-Agent': _get_user_agent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        }
+        headers = {}
         if is_douyin:
             headers.update({
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15',
                 'Referer': 'https://www.douyin.com/',
                 'Origin': 'https://www.douyin.com',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -976,34 +1225,41 @@ class DownloaderApp(ctk.CTk):
                 'Referer': 'https://t.me/',
                 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             })
+        if is_bilibili:
+            # Bilibili CDN requests are checked against the web origin. Keep
+            # these headers on both metadata and media requests to avoid 403s.
+            headers.update({
+                'Referer': url,
+                'Origin': 'https://www.bilibili.com',
+                'Accept': '*/*',
+            })
 
         ydl_opts = {
             'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
-            'noplaylist': bool(download_type == 'video_prores' or not is_telegram),
+            'noplaylist': bool(download_type in ('video_prores', 'subtitles') or not is_telegram),
             'progress_hooks': [self.progress_hook],
-            'http_headers': headers,
-            'concurrent_fragment_downloads': 10,
+            'concurrent_fragment_downloads': 4,
             'ffmpeg_location': get_ffmpeg_path(),
             'retries': 10,
             'fragment_retries': 10,
-            'skip_unavailable_fragments': True,
+            'skip_unavailable_fragments': False,
             'socket_timeout': 60,
-            'http_chunk_size': 10485760,
             'quiet': True,
-            'no_warnings': True,
+            'no_warnings': False,
+            'logger': YDLLogger(self),
+            'js_runtimes': get_js_runtimes(),
         }
-        proxy = self._get_proxy()
+        if headers:
+            ydl_opts['http_headers'] = headers
+        proxy = request_config.get('proxy')
         if proxy:
             ydl_opts['proxy'] = proxy
         if is_douyin:
             ydl_opts.update({'sleep_interval': 1, 'max_sleep_interval': 3})
 
-        _best_sort = ['lang', 'res', 'fps', 'vbr', 'abr', 'br']
-
         if download_type == 'audio':
             ydl_opts.update({
                 'format': 'bestaudio/best',
-                'format_sort': ['abr', 'br'],
                 'postprocessors': [{'key': 'FFmpegExtractAudio',
                                     'preferredcodec': 'mp3', 'preferredquality': '320'}]
             })
@@ -1016,35 +1272,9 @@ class DownloaderApp(ctk.CTk):
             # failures when the source uses codecs that MP4 cannot hold
             # (e.g. B站 HEVC video + FLAC audio).
             ydl_opts.update({
-                'format': 'bestvideo+bestaudio/best',
+                'format': 'bestvideo*+bestaudio/best',
                 'merge_output_format': 'mkv',
-                'format_sort': _best_sort,
             })
-
-        if sys.platform == 'darwin':
-            BROWSER_PATHS = {
-                'safari': '/Applications/Safari.app',
-                'chrome': '/Applications/Google Chrome.app',
-                'firefox': '/Applications/Firefox.app',
-            }
-            BROWSER_ORDER = ['safari', 'chrome', 'firefox']
-        elif os.name == 'nt':
-            _pf = os.environ.get('ProgramFiles', 'C:\\Program Files')
-            _pfx86 = os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)')
-            BROWSER_PATHS = {
-                'chrome': os.path.join(_pf, 'Google\\Chrome\\Application\\chrome.exe'),
-                'firefox': os.path.join(_pf, 'Mozilla Firefox\\firefox.exe'),
-                'edge': os.path.join(_pfx86, 'Microsoft\\Edge\\Application\\msedge.exe'),
-            }
-            BROWSER_ORDER = ['chrome', 'firefox', 'edge']
-        else:
-            BROWSER_PATHS = {
-                'chrome': '/usr/bin/google-chrome',
-                'firefox': '/usr/bin/firefox',
-            }
-            BROWSER_ORDER = ['chrome', 'firefox']
-        available_browsers = [b for b in BROWSER_ORDER if os.path.exists(BROWSER_PATHS.get(b, ''))]
-
         COOKIE_ERR = [
             'cookie', 'fresh', 'login', 'sign check', 'sign in', 'not a bot',
             'confirm you', 'could not find', 'database', 'no such file',
@@ -1052,108 +1282,58 @@ class DownloaderApp(ctk.CTk):
             'keychain', 'decrypt',
         ]
 
-        cookie_file = self.cookie_file_path.get().strip()
-        use_browser_cookie = self.use_cookie_var.get()
-        attempts = []
-
-        # 1. Explicit cookie file (highest priority if provided)
-        if cookie_file and os.path.exists(cookie_file):
-            attempts.append(('file', cookie_file))
-
-        # 2. Browser cookie extraction (only when user opts in via checkbox)
-        if use_browser_cookie:
-            for b in available_browsers:
-                attempts.append(('browser', b))
-
-        # 3. Always try without cookies as final fallback
-        attempts.append(('browser', None))
-
         try:
             info, base_filename, last_err = None, None, None
-            orig_lang = 'en'
-            lang_detected = False
-
-            for attempt_type, attempt_val in attempts:
+            for credential_type, credential_value, conservative in self._download_attempts(request_config):
                 try:
-                    # Cookie setup
-                    if attempt_type == 'file':
-                        ydl_opts.pop('cookiesfrombrowser', None)
-                        ydl_opts['cookiefile'] = attempt_val
-                    else:
-                        ydl_opts.pop('cookiefile', None)
-                        if attempt_val:
-                            ydl_opts['cookiesfrombrowser'] = (attempt_val,)
-                        else:
-                            ydl_opts.pop('cookiesfrombrowser', None)
-
-                    self.status_label.configure(
+                    options = self._attempt_options(
+                        ydl_opts, credential_type, credential_value, conservative)
+                    self._log_diagnostic(
+                        'attempt host=%s auth=%s proxy=%s conservative=%s yt-dlp=%s',
+                        host, credential_type, bool(proxy), conservative, yt_dlp.version.__version__)
+                    self._set_status(
                         text="🌐 Connecting..." if self.lang == "en" else "🌐 正在连接服务器...",
                         text_color=("#0071E3", "#0A84FF"))
 
-                    # ── Phase 0: metadata → detect original audio language ────
-                    if not lang_detected and download_type != 'audio':
-                        try:
-                            meta_opts = {k: v for k, v in ydl_opts.items()
-                                         if k not in ('progress_hooks',)}
-                            meta_opts['skip_download'] = True
-                            with yt_dlp.YoutubeDL(meta_opts) as ydl:
-                                meta = ydl.extract_info(url, download=False)
-                            orig_lang = self._detect_original_audio_lang(meta)
-                            # Non-English original + English dub available → two audio tracks
-                            if orig_lang != 'en':
-                                en_avail = any(
-                                    (f.get('language') or '').startswith('en')
-                                    and f.get('acodec', 'none') != 'none'
-                                    and f.get('vcodec', 'none') == 'none'
-                                    for f in (meta.get('formats') or []))
-                                if en_avail:
-                                    ydl_opts['format'] = (
-                                        f'bv*+ba[language={orig_lang}]+ba[language=en]'
-                                        f'/bv*+ba/best')
-                                    ydl_opts['audio_multistreams'] = True
-                            lang_detected = True
-                        except Exception:
-                            pass  # proceed with default format
+                    metadata_options = options.copy()
+                    metadata_options.pop('progress_hooks', None)
+                    metadata_options['skip_download'] = True
+                    with yt_dlp.YoutubeDL(metadata_options) as ydl:
+                        metadata = ydl.extract_info(url, download=False)
+                    self._advance_progress('parse', 1.0)
+                    self._format_diagnostic(metadata, 'metadata')
 
-                    # ── Phase 1: actual download ──────────────────────────────
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    if download_type == 'subtitles':
+                        self._download_subtitles_only(url, options, metadata, request_config)
+                        return
+
+                    if download_type != 'audio':
+                        original_language = self._detect_original_audio_lang(metadata)
+                        english_audio = any(
+                            (fmt.get('language') or '').startswith('en')
+                            and fmt.get('acodec', 'none') != 'none'
+                            and fmt.get('vcodec', 'none') == 'none'
+                            for fmt in (metadata.get('formats') or []))
+                        if original_language != 'en' and english_audio:
+                            options['format'] = (
+                                f'bv*+ba[language={original_language}]+ba[language=en]'
+                                '/bv*+ba/best')
+                            options['audio_multistreams'] = True
+
+                    self._progress_stage = 'media'
+                    with yt_dlp.YoutubeDL(options) as ydl:
                         info = ydl.extract_info(url, download=True)
                         base_filename = os.path.splitext(ydl.prepare_filename(info))[0]
+                    self._advance_progress('media', 1.0)
+                    self._format_diagnostic(info, 'downloaded')
                     break
 
                 except Exception as e:
-                    if any(w in str(e).lower() for w in COOKIE_ERR):
+                    if self._is_http_403(e) or any(w in str(e).lower() for w in COOKIE_ERR):
                         last_err = e
+                        self._log_diagnostic('attempt failed retryable=%s', e)
                         continue
                     raise
-
-            # ── Phase 2: subtitle download (separate pass, silent failure) ────
-            if info is not None and download_type not in ('audio', 'video_prores') \
-                    and not is_telegram and not getattr(self, 'is_cancelled', False):
-                try:
-                    if not lang_detected:
-                        orig_lang = self._detect_original_audio_lang(info)
-                    sub_langs = self._choose_subtitle_langs(info, orig_lang)
-                    self.status_label.configure(
-                        text="📄 正在下载字幕..." if self.lang == "zh" else "📄 Fetching subtitles...",
-                        text_color=("#FF9500", "#FF9F0A"))
-                    sub_opts = {k: v for k, v in ydl_opts.items()
-                                if k not in ('concurrent_fragment_downloads', 'merge_output_format',
-                                             'postprocessor_args', 'format_sort', 'format',
-                                             'progress_hooks', 'audio_multistreams')}
-                    sub_opts.update({
-                        'skip_download': True,
-                        'writesubtitles': True,
-                        'writeautomaticsub': True,
-                        'subtitleslangs': sub_langs,
-                        'subtitlesformat': 'srt/vtt/best',
-                        'quiet': True,
-                        'no_warnings': True,
-                    })
-                    with yt_dlp.YoutubeDL(sub_opts) as ydl:
-                        ydl.extract_info(url, download=True)
-                except Exception:
-                    pass  # subtitle failure never blocks the video
 
             if info is None:
                 raise last_err or Exception("所有下载方案均无效")
@@ -1162,10 +1342,12 @@ class DownloaderApp(ctk.CTk):
             actual_container = ORIGINAL_CONTAINER_DEFAULT
             if download_type == 'video_original' and target_container == 'mp4' \
                     and not getattr(self, 'is_cancelled', False):
-                self.status_label.configure(
+                self._advance_progress('postprocess', 0.1)
+                self._set_status(
                     text="📦 封装为 MP4..." if self.lang == "zh" else "📦 Remuxing to MP4...",
                     text_color=("#FF9500", "#FF9F0A"))
                 actual_container = self._remux_to_mp4(base_filename)
+                self._advance_progress('postprocess', 1.0)
 
             # ── ProRes transcode ──────────────────────────────────────────────
             if download_type == 'video_prores':
@@ -1173,7 +1355,8 @@ class DownloaderApp(ctk.CTk):
                     (f"{base_filename}{ext}" for ext in ['.mp4', '.mkv', '.webm', '.flv', '.ts', '.m4v']
                      if os.path.exists(f"{base_filename}{ext}")), None)
                 if orig:
-                    self.status_label.configure(
+                    self._advance_progress('postprocess', 0.1)
+                    self._set_status(
                         text="🎬 Transcoding to ProRes..." if self.lang == "en" else "🎬 正在转码 ProRes...",
                         text_color=("#FF9500", "#FF9F0A"))
                     subprocess.run([
@@ -1182,28 +1365,30 @@ class DownloaderApp(ctk.CTk):
                         '-c:a', 'aac', '-b:a', '320k', '-map_metadata', '0',
                         f"{base_filename}.mov"], check=True)
                     os.remove(orig)
-                    self.status_label.configure(
+                    self._advance_progress('postprocess', 1.0)
+                    self._set_status(
                         text="✅ ProRes ready! Drag into Final Cut Pro" if self.lang == "en"
                              else "✅ ProRes 转码完成！可拖入 Final Cut Pro",
                         text_color=("#34C759", "#30D158"))
             elif download_type == 'audio':
-                self.status_label.configure(
+                self._set_status(
                     text="✅ Audio extracted as MP3" if self.lang == "en" else "✅ 音频提取完成（MP3）",
                     text_color=("#34C759", "#30D158"))
             elif is_telegram:
-                self.status_label.configure(
+                self._set_status(
                     text="✅ Telegram video downloaded!" if self.lang == "en" else "✅ Telegram 视频下载完成！",
                     text_color=("#34C759", "#30D158"))
             else:
                 if actual_container == 'mkv' and target_container == 'mp4':
-                    self.status_label.configure(
+                    self._set_status(
                         text=self.t("status_done_mkv_fallback"),
                         text_color=("#34C759", "#30D158"))
                 else:
-                    self.status_label.configure(
+                    self._set_status(
                         text=self.t("status_done_original").format(
                             container=actual_container.upper()),
                         text_color=("#34C759", "#30D158"))
+            self._advance_progress('complete', 1.0)
 
         except Exception as e:
             self.handle_error(e)
@@ -1269,6 +1454,7 @@ class DownloaderApp(ctk.CTk):
         ext = '.mp4'
         filepath = os.path.join(output_path, f"{title}{ext}")
         self.cleanup_target = filepath
+        self._progress_stage = 'media'
 
         req = urllib.request.Request(video_url, headers={
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) '
@@ -1290,18 +1476,18 @@ class DownloaderApp(ctk.CTk):
                     out.write(buf)
                     if file_size > 0:
                         pct = downloaded / file_size
-                        if pct > self._progress_target:
-                            self._progress_target = pct
+                        overall = self._advance_progress('media', pct)
                         dl_mb = downloaded / 1048576
                         tot_mb = file_size / 1048576
-                        msg = (f"下载中 {pct*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB"
+                        msg = (f"下载中 {overall*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB"
                                if self.lang == "zh" else
-                               f"Downloading {pct*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB")
-                        self.status_label.configure(text=msg, text_color=("#0071E3", "#0A84FF"))
+                               f"Downloading {overall*100:.1f}%  ·  {dl_mb:.1f}/{tot_mb:.1f} MB")
+                        self._set_status(text=msg, text_color=("#0071E3", "#0A84FF"))
 
         if audio_only:
             mp3_path = os.path.join(output_path, f"{title}.mp3")
-            self.status_label.configure(
+            self._advance_progress('postprocess', 0.1)
+            self._set_status(
                 text="🎵 提取音频中..." if self.lang == "zh" else "🎵 Extracting audio...",
                 text_color=("#FF9500", "#FF9F0A"))
             subprocess.run([
@@ -1312,7 +1498,8 @@ class DownloaderApp(ctk.CTk):
             msg = "✅ 音频提取完成（MP3）" if self.lang == "zh" else "✅ Audio extracted (MP3)"
         elif prores:
             mov_path = os.path.join(output_path, f"{title}.mov")
-            self.status_label.configure(
+            self._advance_progress('postprocess', 0.1)
+            self._set_status(
                 text="🎬 正在转码 ProRes..." if self.lang == "zh" else "🎬 Transcoding to ProRes...",
                 text_color=("#FF9500", "#FF9F0A"))
             subprocess.run([
@@ -1325,15 +1512,15 @@ class DownloaderApp(ctk.CTk):
         else:
             msg = "✅ 抖音视频下载完成！" if self.lang == "zh" else "✅ Douyin video downloaded!"
 
-        self._progress_target = 1.0
-        self.status_label.configure(text=msg, text_color=("#34C759", "#30D158"))
+        self._advance_progress('complete', 1.0)
+        self._set_status(text=msg, text_color=("#34C759", "#30D158"))
         return True
 
     # ── Error handling ───────────────────────────────────────────────────────
 
     def handle_error(self, e):
         if "CANCELLED_BY_USER" in str(e):
-            self.status_label.configure(
+            self._set_status(
                 text="🚫 Cancelled, cleaning up..." if self.lang == "en" else "🚫 已取消，正在清理...",
                 text_color=("#FF9500", "#FF9F0A"))
             if hasattr(self, 'cleanup_target') and self.cleanup_target:
@@ -1343,23 +1530,40 @@ class DownloaderApp(ctk.CTk):
                         os.remove(f)
                     except Exception:
                         pass
-            self.status_label.configure(
+            self._set_status(
                 text="🗑️ Cleaned up." if self.lang == "en" else "🗑️ 清理完成",
                 text_color=("#FF9500", "#FF9F0A"))
         else:
-            err_str = str(e)
+            err_str = sanitize_diagnostic(e)
             last_url = getattr(self, '_last_url', '')
             self._last_error = err_str
+            self._log_diagnostic('download failed: %s', e)
             if self.is_telegram_url(last_url):
                 msg = ("❌ Telegram 下载失败：请确认链接是公开频道的视频消息（点击查看详情）"
                        if self.lang == "zh" else
                        "❌ Telegram download failed: use a public channel video post (click for details)")
-                self.status_label.configure(text=msg, text_color=("#FF3B30", "#FF453A"))
+                self._set_status(text=msg, text_color=("#FF3B30", "#FF453A"))
+                return
+            if self._is_http_403(err_str):
+                summary = ("HTTP 403：服务器拒绝请求，请更新 Cookie 或设置代理"
+                           if self.lang == "zh" else
+                           "HTTP 403: request rejected; update cookies or set a proxy")
+                hint = "（点击查看详情）" if self.lang == "zh" else " (click for details)"
+                self._set_status(text=f"❌ {summary}{hint}",
+                                 text_color=("#FF3B30", "#FF453A"))
+                return
+            if 'javascript runtime' in err_str.lower() or 'challenge solver' in err_str.lower():
+                summary = ("YouTube 解析需要 Deno/EJS 运行环境"
+                           if self.lang == "zh" else
+                           "YouTube extraction requires the Deno/EJS runtime")
+                hint = "（点击查看详情）" if self.lang == "zh" else " (click for details)"
+                self._set_status(text=f"❌ {summary}{hint}",
+                                 text_color=("#FF3B30", "#FF453A"))
                 return
             summary = err_str.replace('\n', ' ')[:72]
             hint = "（点击查看详情）" if self.lang == "zh" else " (click for details)"
-            self.status_label.configure(text=f"❌ {summary}...{hint}",
-                                        text_color=("#FF3B30", "#FF453A"))
+            self._set_status(text=f"❌ {summary}...{hint}",
+                             text_color=("#FF3B30", "#FF453A"))
 
 
 if __name__ == "__main__":

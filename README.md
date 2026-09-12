@@ -18,6 +18,14 @@
 
 ## English
 
+### Maintenance release 1.2.1
+
+- Updated yt-dlp to 2026.8.19.
+- Bundled the EJS scripts and Deno runtime required by current YouTube extraction.
+- Preserved authenticated quality during Bilibili CDN/HTTP 403 retries.
+- Added a standalone subtitle downloader with language and SRT/VTT controls.
+- Made user-visible progress monotonic across download and processing stages.
+
 ### What is Danload?
 
 Danload is a free, clean desktop app for downloading videos, audio, and files at their original quality — with built-in ProRes transcoding for editors.
@@ -30,6 +38,7 @@ Danload is a free, clean desktop app for downloading videos, audio, and files at
 | **Original Container** | Choose MKV or MP4 packaging for original-quality video |
 | **ProRes Export** | One-click transcode to Apple ProRes — ready for Final Cut Pro, DaVinci Resolve |
 | **Audio Only** | Extract audio directly |
+| **Subtitles Only** | Download manual or automatic subtitles without downloading video |
 | **File Download** | General-purpose URL file downloader |
 | **Browser Cookie** | Access member-only or login-required content via your browser's cookies |
 | **Proxy Support** | Route all downloads through HTTP/SOCKS proxy (Clash, V2Ray, etc.) |
@@ -49,6 +58,7 @@ Go to [Releases](https://github.com/Danub3/Danload/releases/latest) and download
 **Requirements:**
 - Python 3.10+
 - ffmpeg
+- Deno 2.3+ (bundled into release builds for YouTube JavaScript challenges)
 
 **macOS:**
 
@@ -56,7 +66,7 @@ Go to [Releases](https://github.com/Danub3/Danload/releases/latest) and download
 git clone https://github.com/Danub3/Danload.git
 cd Danload
 pip install -r requirements.txt
-brew install ffmpeg       # if not already installed
+brew install ffmpeg deno  # if not already installed
 pyinstaller Danload.spec
 ```
 
@@ -67,7 +77,7 @@ git clone https://github.com/Danub3/Danload.git
 cd Danload
 pip install -r requirements.txt
 # Download ffmpeg.exe and ffprobe.exe from https://ffmpeg.org/download.html
-# Place them in the project root directory
+# Place them in the project root directory and install Deno 2.3+
 pyinstaller Danload-win.spec
 ```
 
@@ -78,6 +88,14 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) — supports 1000+ sites i
 ---
 
 ## 中文
+
+### 维护版本 1.2.1
+
+- yt-dlp 更新至 2026.8.19。
+- 打包当前 YouTube 解析所需的 EJS 脚本与 Deno 运行时。
+- B 站 CDN / HTTP 403 重试期间保持登录画质，不再匿名降级。
+- 增加独立字幕下载，可选择语言策略与 SRT/VTT。
+- 下载、封装与转码阶段的可见进度保持单调递增。
 
 ### 什么是 Danload？
 
@@ -91,6 +109,7 @@ Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、
 | **原画封装** | 原画视频可选择 MKV 或 MP4 封装 |
 | **ProRes 转码** | 一键转码为 Apple ProRes，直接导入 Final Cut Pro、DaVinci Resolve |
 | **纯音频提取** | 直接提取视频音轨 |
+| **独立字幕下载** | 不下载视频，仅下载人工字幕或自动字幕 |
 | **文件下载** | 通用 URL 文件下载 |
 | **浏览器 Cookie** | 通过浏览器 Cookie 访问需要登录或会员权限的内容 |
 | **代理支持** | 所有下载均可通过 HTTP/SOCKS 代理（Clash、V2Ray 等） |
@@ -110,6 +129,7 @@ Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、
 **环境要求：**
 - Python 3.10+
 - ffmpeg
+- Deno 2.3+（发布构建会将其打包，用于 YouTube JavaScript challenge）
 
 **macOS：**
 
@@ -117,7 +137,7 @@ Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、
 git clone https://github.com/Danub3/Danload.git
 cd Danload
 pip install -r requirements.txt
-brew install ffmpeg       # 如未安装
+brew install ffmpeg deno  # 如未安装
 pyinstaller Danload.spec
 ```
 
@@ -128,7 +148,7 @@ git clone https://github.com/Danub3/Danload.git
 cd Danload
 pip install -r requirements.txt
 # 从 https://ffmpeg.org/download.html 下载 ffmpeg.exe 和 ffprobe.exe
-# 放到项目根目录
+# 放到项目根目录，并安装 Deno 2.3+
 pyinstaller Danload-win.spec
 ```
 

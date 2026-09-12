@@ -1,13 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import re
+import shutil
 import customtkinter
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 with open('app.py', encoding='utf-8') as _f:
     _m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', _f.read())
 APP_VERSION = _m.group(1)
 
 ctk_path = os.path.dirname(customtkinter.__file__)
+deno_path = shutil.which('deno')
+if not deno_path:
+    raise SystemExit('Deno 2.3+ is required to build Danload with YouTube support')
+
+hiddenimports = ['customtkinter', 'yt_dlp', 'yt_dlp.extractor']
+hiddenimports += collect_submodules('yt_dlp_ejs')
 
 a = Analysis(
     ['app.py'],
@@ -15,11 +23,12 @@ a = Analysis(
     binaries=[
         ('ffmpeg', '.'),
         ('ffprobe', '.'),
+        (deno_path, '.'),
     ],
     datas=[
         (ctk_path, 'customtkinter'),
-    ],
-    hiddenimports=['customtkinter', 'yt_dlp', 'yt_dlp.extractor'],
+    ] + collect_data_files('yt_dlp_ejs'),
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
