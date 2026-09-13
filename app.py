@@ -57,6 +57,7 @@ VIDEO_WINDOW_HEIGHT = 520
 MAIN_FRAME_VERTICAL_PADDING = 28
 STATUS_AREA_HEIGHT = 34
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+_PROXY_UNSET = object()
 
 
 def entry_drag_scroll_units(pointer_x, width, edge=8):
@@ -307,7 +308,9 @@ class DownloaderApp(ctk.CTk):
             yt_dlp.version.__version__, next(iter(get_js_runtimes())),
         )
 
-        threading.Thread(target=self.check_for_updates, daemon=True).start()
+        update_proxy = self._get_proxy()
+        threading.Thread(
+            target=self.check_for_updates, args=(update_proxy,), daemon=True).start()
 
     def t(self, key):
         return self.i18n[self.lang][key]
@@ -375,13 +378,13 @@ class DownloaderApp(ctk.CTk):
         except (ValueError, AttributeError):
             return (0,)
 
-    def check_for_updates(self):
+    def check_for_updates(self, proxy=None):
         try:
             req = urllib.request.Request(
                 "https://api.github.com/repos/Danub3/Danload/releases/latest",
                 headers={"User-Agent": "Danload/" + APP_VERSION}
             )
-            opener = self._build_opener()
+            opener = self._build_opener(proxy)
             with opener.open(req, timeout=8) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             latest = data.get("tag_name", "").lstrip("v")
@@ -976,9 +979,12 @@ class DownloaderApp(ctk.CTk):
             'http error 403', 'http 403', '403: forbidden', '403 forbidden',
             'server returned 403', 'status code 403'))
 
-    def _build_opener(self):
-        """Build an opener with either the configured proxy or explicit direct mode."""
-        proxy = self._get_proxy()
+    def _build_opener(self, proxy=_PROXY_UNSET):
+        """Build an opener from a plain-string proxy snapshot."""
+        if proxy is _PROXY_UNSET:
+            # Preserve the synchronous helper API while worker paths pass an
+            # explicit value (including None for direct mode).
+            proxy = self._get_proxy()
         if proxy:
             handler = urllib.request.ProxyHandler({
                 'http': proxy, 'https': proxy, 'ftp': proxy,
@@ -1511,7 +1517,7 @@ class DownloaderApp(ctk.CTk):
         url = re.sub(r'\?.*$', '', url) if 'y.qq.com' in url else url
         return url
 
-    def resolve_douyin_short_url(self, url):
+    def resolve_douyin_short_url(self, url, proxy=None):
         """Follow v.douyin.com redirect → full douyin.com/video/{id} URL."""
         if 'v.douyin.com' not in url:
             return url
@@ -1520,7 +1526,7 @@ class DownloaderApp(ctk.CTk):
                 url,
                 headers={'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) '
                                        'AppleWebKit/605.1.15'})
-            opener = self._build_opener()
+            opener = self._build_opener(proxy)
             resp = self._open_download_response(opener, req, timeout=10)
             try:
                 final = resp.url
@@ -1589,7 +1595,7 @@ class DownloaderApp(ctk.CTk):
         self.status_label.configure(text=msg, text_color=("#0071E3", "#0A84FF"))
 
         target = self.download_general_file if download_type == 'general_file' else self.download_media
-        args = ((url,) if download_type == 'general_file'
+        args = ((url, request_config.get('proxy')) if download_type == 'general_file'
                 else (url, download_type, original_container, request_config))
         threading.Thread(target=target, args=args, daemon=True).start()
 
@@ -1615,7 +1621,7 @@ class DownloaderApp(ctk.CTk):
 
     # ── General file download ────────────────────────────────────────────────
 
-    def download_general_file(self, url):
+    def download_general_file(self, url, proxy=None):
         output_path = self.download_folder
         os.makedirs(output_path, exist_ok=True)
         try:
@@ -1633,7 +1639,7 @@ class DownloaderApp(ctk.CTk):
             self._set_status(text=msg, text_color=("#34C759", "#30D158"))
 
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            opener = self._build_opener()
+            opener = self._build_opener(proxy)
             resp = self._open_download_response(opener, req)
             try:
                 out = open(tmp_filepath, 'wb')
@@ -1835,6 +1841,7 @@ class DownloaderApp(ctk.CTk):
 
     def download_media(self, url, download_type, original_container=None, request_config=None):
         request_config = request_config or {}
+        proxy = request_config.get('proxy')
         include_subtitles = bool(request_config.get('include_subtitles')) \
             and download_type in ('video_original', 'video_prores')
         output_path = self.download_folder
@@ -1852,7 +1859,7 @@ class DownloaderApp(ctk.CTk):
             self._set_status(
                 text="🔗 正在解析抖音短链..." if self.lang == "zh" else "🔗 Resolving short URL...",
                 text_color=("#6E6E73", "#8E8E93"))
-            url = self.resolve_douyin_short_url(url)
+            url = self.resolve_douyin_short_url(url, proxy)
             self._run_on_ui(lambda u=url: (self.url_entry.delete(0, 'end'),
                                            self.url_entry.insert(0, u)))
 
@@ -1862,7 +1869,8 @@ class DownloaderApp(ctk.CTk):
                 text="🔄 正在解析抖音视频..." if self.lang == "zh" else "🔄 Fetching Douyin video...",
                 text_color=("#FF9500", "#FF9F0A"))
             try:
-                if self._try_douyin_native(url, output_path, download_type):
+                if self._try_douyin_native(
+                        url, output_path, download_type, proxy=proxy):
                     self.reset_ui_state()
                     return
             except Exception as error:
@@ -1950,7 +1958,7 @@ class DownloaderApp(ctk.CTk):
             self._log_diagnostic('segmented downloader=aria2c path=%s', aria2c)
         if headers:
             ydl_opts['http_headers'] = headers
-        proxy = request_config.get('proxy') or ''
+        proxy = proxy or ''
         # An empty string tells yt-dlp to bypass environment/system proxies.
         ydl_opts['proxy'] = proxy
         if is_douyin:
@@ -2158,7 +2166,7 @@ class DownloaderApp(ctk.CTk):
                 return m.group(1)
         return None
 
-    def _try_douyin_native(self, url, output_path, download_type):
+    def _try_douyin_native(self, url, output_path, download_type, proxy=None):
         vid = self._extract_douyin_video_id(url)
         if not vid:
             return False
@@ -2170,7 +2178,7 @@ class DownloaderApp(ctk.CTk):
                               'Version/17.4 Mobile/15E148 Safari/604.1',
                 'Referer': 'https://www.douyin.com/',
             })
-            opener = self._build_opener()
+            opener = self._build_opener(proxy)
             resp = self._open_download_response(opener, req, timeout=15)
             try:
                 html = resp.read().decode('utf-8', errors='ignore')
@@ -2194,11 +2202,11 @@ class DownloaderApp(ctk.CTk):
             if download_type == 'audio':
                 # Download video first, then extract audio with ffmpeg
                 return self._douyin_download_and_convert(
-                    video_url, output_path, title, audio_only=True)
+                    video_url, output_path, title, audio_only=True, proxy=proxy)
             else:
                 return self._douyin_download_and_convert(
                     video_url, output_path, title, audio_only=False,
-                    prores=(download_type == 'video_prores'))
+                    prores=(download_type == 'video_prores'), proxy=proxy)
         except Exception as error:
             self._raise_if_cancelled()
             self._log_diagnostic('native Douyin download failed; falling back to yt-dlp: %s', error)
@@ -2206,7 +2214,7 @@ class DownloaderApp(ctk.CTk):
             return False
 
     def _douyin_download_and_convert(self, video_url, output_path, title,
-                                     audio_only=False, prores=False):
+                                     audio_only=False, prores=False, proxy=None):
         ext = '.mp4'
         filepath = self._next_available_path(os.path.join(output_path, f"{title}{ext}"))
         tmp_filepath = f'{filepath}.part'
@@ -2218,7 +2226,7 @@ class DownloaderApp(ctk.CTk):
                           'AppleWebKit/605.1.15',
             'Referer': 'https://www.douyin.com/',
         })
-        opener = self._build_opener()
+        opener = self._build_opener(proxy)
         resp = self._open_download_response(opener, req, timeout=15)
         try:
             file_size = int(resp.headers.get('Content-Length', -1))

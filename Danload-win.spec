@@ -57,6 +57,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/icon.ico',
+    version='assets/windows_version_info.txt',
 )
 coll = COLLECT(
     exe,

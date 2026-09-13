@@ -1,5 +1,7 @@
 build/
 dist/
+installer_output/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -11,4 +13,5 @@ ffmpeg
 ffprobe
 ffmpeg.exe
 ffprobe.exe
+deno.exe
 scripts/

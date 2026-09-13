@@ -85,7 +85,10 @@ cd Danload
 pip install -r requirements.txt
 # Download ffmpeg.exe and ffprobe.exe from https://ffmpeg.org/download.html
 # Place them in the project root directory and install Deno 2.3+
-pyinstaller Danload-win.spec
+python -m PyInstaller --noconfirm --clean Danload-win.spec
+# Install Inno Setup 6, then build the per-user x64 installer:
+iscc installer.iss
+# Output: installer_output/Danload-1.2.1-Windows-x64-Setup.exe
 ```
 
 ### Supported Sites
@@ -172,7 +175,10 @@ cd Danload
 pip install -r requirements.txt
 # 从 https://ffmpeg.org/download.html 下载 ffmpeg.exe 和 ffprobe.exe
 # 放到项目根目录，并安装 Deno 2.3+
-pyinstaller Danload-win.spec
+python -m PyInstaller --noconfirm --clean Danload-win.spec
+# 安装 Inno Setup 6，然后构建当前用户范围的 x64 安装包：
+iscc installer.iss
+# 输出：installer_output/Danload-1.2.1-Windows-x64-Setup.exe
 ```
 
 ### 支持网站

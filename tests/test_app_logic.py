@@ -89,12 +89,11 @@ class NetworkRoutingTests(unittest.TestCase):
         self.app = object.__new__(DownloaderApp)
 
     def test_blank_proxy_builds_explicit_direct_opener(self):
-        self.app._get_proxy = lambda: None
         handler = object()
         opener = object()
         with mock.patch('app.urllib.request.ProxyHandler', return_value=handler) as proxy_handler, \
                 mock.patch('app.urllib.request.build_opener', return_value=opener) as build_opener:
-            result = self.app._build_opener()
+            result = self.app._build_opener(None)
 
         self.assertIs(result, opener)
         proxy_handler.assert_called_once_with({})
@@ -102,15 +101,26 @@ class NetworkRoutingTests(unittest.TestCase):
 
     def test_configured_proxy_is_applied_to_all_supported_schemes(self):
         proxy = 'http://127.0.0.1:7890'
-        self.app._get_proxy = lambda: proxy
         handler = object()
         with mock.patch('app.urllib.request.ProxyHandler', return_value=handler) as proxy_handler, \
                 mock.patch('app.urllib.request.build_opener'):
-            self.app._build_opener()
+            self.app._build_opener(proxy)
 
         proxy_handler.assert_called_once_with({
             'http': proxy, 'https': proxy, 'ftp': proxy,
         })
+
+    def test_background_opener_does_not_read_tk_variable(self):
+        proxy = 'http://127.0.0.1:7890'
+        self.app.proxy_var = mock.Mock()
+        self.app.proxy_var.get.side_effect = RuntimeError(
+            'main thread is not in main loop')
+        handler = object()
+        with mock.patch('app.urllib.request.ProxyHandler', return_value=handler), \
+                mock.patch('app.urllib.request.build_opener'):
+            self.app._build_opener(proxy)
+
+        self.app.proxy_var.get.assert_not_called()
 
     def test_clearing_proxy_entry_does_not_restore_stale_setting(self):
         class Var:
