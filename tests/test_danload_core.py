@@ -4,7 +4,9 @@ import unittest
 from danload_core import (
     choose_subtitle_languages,
     highest_video_summary,
+    media_format_selector,
     progress_fraction,
+    resolve_download_selection,
     sanitize_diagnostic,
     selected_format_summary,
     stage_progress,
@@ -31,6 +33,46 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(stage_progress(first, "media", 0.2), first)
         self.assertEqual(stage_progress(first, "media", math.nan), first)
         self.assertEqual(stage_progress(first, "complete", 1.0), 1.0)
+
+    def test_attached_subtitle_stage_follows_media_and_postprocessing(self):
+        media_done = stage_progress(0.0, "media", 1.0)
+        postprocess_done = stage_progress(media_done, "postprocess", 1.0)
+        subtitle_started = stage_progress(postprocess_done, "subtitle", 0.0)
+        subtitle_done = stage_progress(subtitle_started, "subtitle", 1.0)
+        self.assertEqual((media_done, postprocess_done), (0.88, 0.95))
+        self.assertGreater(subtitle_done, subtitle_started)
+        self.assertLess(subtitle_done, 1.0)
+
+
+class DownloadSelectionTests(unittest.TestCase):
+    def test_quality_first_media_selectors(self):
+        self.assertEqual(media_format_selector('video_original'), 'bv*+ba/b')
+        self.assertEqual(media_format_selector('video_prores'), 'bv*+ba/b')
+        self.assertEqual(media_format_selector('audio'), 'bestaudio/best')
+        self.assertIsNone(media_format_selector('general_file'))
+
+    def test_video_formats_map_to_existing_download_paths(self):
+        self.assertEqual(
+            resolve_download_selection('video', 'MKV', False),
+            ('video_original', 'mkv', False))
+        self.assertEqual(
+            resolve_download_selection('video', 'MP4', True),
+            ('video_original', 'mp4', True))
+        self.assertEqual(
+            resolve_download_selection('video', 'ProRes', True),
+            ('video_prores', 'mkv', True))
+
+    def test_non_video_modes_cannot_attach_subtitles(self):
+        self.assertEqual(
+            resolve_download_selection('audio', 'ProRes', True),
+            ('audio', 'mkv', False))
+        self.assertEqual(
+            resolve_download_selection('general_file', 'MP4', True),
+            ('general_file', 'mkv', False))
+
+    def test_unknown_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            resolve_download_selection('subtitles', 'SRT', True)
 
 
 class SubtitleTests(unittest.TestCase):

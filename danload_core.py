@@ -6,11 +6,42 @@ import re
 STAGE_RANGES = {
     "parse": (0.0, 0.05),
     "media": (0.05, 0.88),
-    "subtitle": (0.05, 0.95),
-    "postprocess": (0.88, 0.99),
-    "subtitle_finalize": (0.95, 0.99),
+    "postprocess": (0.88, 0.95),
+    "subtitle": (0.95, 0.985),
+    "subtitle_finalize": (0.985, 0.99),
     "complete": (1.0, 1.0),
 }
+
+
+def resolve_download_selection(mode, video_format="mkv", include_subtitles=False):
+    """Map the UI hierarchy to the existing download implementation."""
+    if mode == "video":
+        normalized_format = str(video_format).strip().lower()
+        if normalized_format == "prores":
+            return "video_prores", "mkv", bool(include_subtitles)
+        if normalized_format not in ("mkv", "mp4"):
+            normalized_format = "mkv"
+        return "video_original", normalized_format, bool(include_subtitles)
+    if mode == "audio":
+        return "audio", "mkv", False
+    if mode == "general_file":
+        return "general_file", "mkv", False
+    raise ValueError(f"Unknown download mode: {mode}")
+
+
+def media_format_selector(download_type):
+    """Return a quality-first yt-dlp selector for a media mode.
+
+    ``bv*`` deliberately leaves codec/container decisions to yt-dlp while
+    preferring the highest video representation exposed by the extractor.
+    The fallback keeps progressive-only sites working, including older
+    extractors that cannot expose separate audio/video streams.
+    """
+    if download_type == "audio":
+        return "bestaudio/best"
+    if download_type in ("video_original", "video_prores"):
+        return "bv*+ba/b"
+    return None
 
 
 def clamp_fraction(value):
