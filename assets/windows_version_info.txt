@@ -16,7 +16,7 @@ VSVersionInfo(
                 [
                     StringStruct(u'CompanyName', u'Danub3'),
                     StringStruct(u'FileDescription', u'Danload media downloader'),
-                    StringStruct(u'FileVersion', u'1.2.2.0'),
+                    StringStruct(u'FileVersion', u'1.2.2'),
                     StringStruct(u'InternalName', u'Danload'),
                     StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Danub3'),
                     StringStruct(u'OriginalFilename', u'Danload.exe'),
