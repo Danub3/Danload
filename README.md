@@ -18,7 +18,7 @@
 
 ## English
 
-### Maintenance release 1.2.1
+### Maintenance release 1.2.2
 
 - Updated yt-dlp to 2026.8.19.
 - Bundled the EJS scripts and Deno runtime required by current YouTube extraction.
@@ -28,30 +28,38 @@
 - Made the proxy field explicit: an empty value uses direct application requests.
 - Cancellation now interrupts active network responses and ffmpeg work, then removes only this download's temporary files.
 - A transient Bilibili CDN failure now removes new single-stream leftovers, refreshes metadata, and retries once without changing the selected credentials or quality policy.
-- Completed MKV, MP4, and ProRes outputs are checked with ffprobe for the expected container plus video and audio streams before success is shown.
+- Video downloads now retain yt-dlp's actual final container and extension. Danload does not force MKV/MP4/ProRes packaging or rename a file to suggest compatibility.
+- Added an independent local-file editor conversion with automatic H.264/HEVC, optional ProRes, and FFV1 presets. It preserves the source and validates resolution, frame rate, color/HDR tags, audio layout, metadata, and duration.
 - Error summaries stay in a fixed-height status area; the full copyable error remains available by clicking the summary.
 
 ### What is Danload?
 
-Danload is a free, clean desktop app for downloading videos, audio, and files at their original quality — with built-in ProRes transcoding for editors.
+Danload is a free, clean desktop app for downloading videos, audio, and files at their original quality, with an independent local conversion tool for editor-friendly files.
 
 ### Features
 
 | Feature | Description |
 |---------|-------------|
 | **Original Quality** | Downloads the highest available quality, no re-encoding |
-| **Video Output** | Choose MKV, MP4, or ProRes from the video mode |
-| **ProRes Export** | One-click transcode to Apple ProRes — ready for Final Cut Pro, DaVinci Resolve |
+| **Native Video Container** | Keeps yt-dlp's actual merged container and extension; no forced remux or fake extension |
+| **Editor-Compatible Conversion** | Convert an existing local video with automatic H.264/HEVC, optional ProRes, or FFV1 output without changing the download or source file |
 | **Audio Only** | Extract audio directly |
 | **Video Subtitles** | Optionally download manual or automatic subtitles alongside video |
 | **File Download** | General-purpose URL file downloader |
 | **Browser Cookie** | Access member-only or login-required content via your browser's cookies |
 | **Proxy Support** | Route all downloads through HTTP/SOCKS proxy (Clash, V2Ray, etc.) |
 | **Custom Save Location** | Choose where files are saved |
-| **Persistent Settings** | Remembers your save location and video output format |
+| **Persistent Settings** | Remembers your save location and proxy |
 | **Auto Update** | Notifies you when a new version is available |
 | **Bilingual UI** | Switch between English and Chinese in-app |
 | **Appearance** | Follows the system theme by default, with a light/dark toggle |
+
+Downloads are quality-first and retain the container produced by yt-dlp. The local
+conversion tool is separate: compatible H.264/HEVC/ProRes streams can be copied;
+otherwise H.264 and HEVC are visually near-lossless re-encodes, ProRes is an
+optional high-quality editing intermediate, and FFV1 is mathematically lossless
+but much larger and less widely supported. Resolution, frame rate, color/HDR tags,
+audio layout, timing, and the original file are preserved and validated.
 
 ### Download
 
@@ -88,7 +96,7 @@ pip install -r requirements.txt
 python -m PyInstaller --noconfirm --clean Danload-win.spec
 # Install Inno Setup 6, then build the per-user x64 installer:
 iscc installer.iss
-# Output: installer_output/Danload-1.2.1-Windows-x64-Setup.exe
+# Output: installer_output/Danload-1.2.2-Windows-x64-Setup.exe
 ```
 
 ### Supported Sites
@@ -108,7 +116,7 @@ slower than a direct connection.
 
 ## 中文
 
-### 维护版本 1.2.1
+### 维护版本 1.2.2
 
 - yt-dlp 更新至 2026.8.19。
 - 打包当前 YouTube 解析所需的 EJS 脚本与 Deno 运行时。
@@ -118,30 +126,36 @@ slower than a direct connection.
 - 代理输入框为空时显式使用应用直连模式。
 - 取消会立即中断当前网络请求和 ffmpeg 处理，并只清理本次下载登记的临时文件。
 - B 站 CDN 出现瞬时故障时，会清理本轮新增的单流残留、刷新元数据并重试一次，同时保持原有登录凭据与画质策略。
-- MKV、MP4 和 ProRes 完成前会通过 ffprobe 检查容器以及视频、音频流，单流文件不会显示为下载完成。
+- 视频下载保留 yt-dlp 实际合并得到的容器和扩展名，不强制封装为 MKV/MP4/ProRes，也不通过改扩展名伪装兼容性。
+- 新增独立的本地“剪辑兼容转换”：自动选择 H.264/HEVC，也可选 ProRes 或 FFV1；校验分辨率、帧率、色彩/HDR 标记、音轨、元数据和时长，原文件保持不变。
 - 错误摘要固定在稳定高度的状态区中，点击摘要仍可查看并复制完整错误。
 
 ### 什么是 Danload？
 
-Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、音频和文件，并内置 ProRes 转码功能，专为视频编辑者设计。
+Danload 是一款免费、简洁的桌面应用，支持原画质下载视频、音频和文件，并提供独立的本地剪辑兼容转换工具。
 
 ### 功能特性
 
 | 功能 | 说明 |
 |------|------|
 | **原画下载** | 下载最高可用画质，不经过二次压缩 |
-| **视频输出** | 视频模式可选择 MKV、MP4 或 ProRes |
-| **ProRes 转码** | 一键转码为 Apple ProRes，直接导入 Final Cut Pro、DaVinci Resolve |
+| **原生视频容器** | 保留 yt-dlp 实际合并的容器和扩展名，不强制重封装或伪造扩展名 |
+| **剪辑兼容转换** | 将本地视频自动转换为 H.264/HEVC，也可选择 ProRes 或 FFV1，不改变下载结果，也不覆盖原文件 |
 | **纯音频提取** | 直接提取视频音轨 |
 | **视频附带字幕** | 下载视频时可同时下载人工字幕或自动字幕 |
 | **文件下载** | 通用 URL 文件下载 |
 | **浏览器 Cookie** | 通过浏览器 Cookie 访问需要登录或会员权限的内容 |
 | **代理支持** | 所有下载均可通过 HTTP/SOCKS 代理（Clash、V2Ray 等） |
 | **自定义保存位置** | 自由选择文件保存路径 |
-| **设置持久化** | 自动记住保存路径和视频输出格式 |
+| **设置持久化** | 自动记住保存路径和代理设置 |
 | **自动更新提示** | 有新版本时自动提醒 |
 | **中英文切换** | 应用内一键切换界面语言 |
 | **外观主题** | 默认跟随系统，也可在应用内切换深色与浅色 |
+
+下载流程以画质优先，并保留 yt-dlp 产生的实际容器。本地转换与下载相互独立：
+兼容的 H.264/HEVC/ProRes 可以直接复制媒体流；否则 H.264 与 HEVC 属于视觉近无损
+重新编码，ProRes 是可选的高质量剪辑中间格式，FFV1 是数学无损但体积很大且兼容性
+较弱的格式。程序会校验并保留分辨率、帧率、色彩/HDR 标记、音轨布局、时长以及原文件。
 
 ### 下载
 
@@ -178,7 +192,7 @@ pip install -r requirements.txt
 python -m PyInstaller --noconfirm --clean Danload-win.spec
 # 安装 Inno Setup 6，然后构建当前用户范围的 x64 安装包：
 iscc installer.iss
-# 输出：installer_output/Danload-1.2.1-Windows-x64-Setup.exe
+# 输出：installer_output/Danload-1.2.2-Windows-x64-Setup.exe
 ```
 
 ### 支持网站

@@ -18,6 +18,7 @@ import time
 
 from danload_core import (
     choose_subtitle_languages,
+    editing_conversion_plan,
     highest_video_summary,
     media_format_selector,
     progress_fraction,
@@ -27,7 +28,7 @@ from danload_core import (
     stage_progress,
 )
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 
 if sys.platform != 'win32':
     _extra_paths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
@@ -45,10 +46,6 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 
 DEFAULT_DOWNLOAD_PATH = os.path.join(os.path.expanduser('~'), 'Downloads', 'Danload')
-ORIGINAL_CONTAINER_DEFAULT = 'mkv'
-# Kept for integrations that imported the pre-1.2.1 container choices.
-ORIGINAL_CONTAINER_VALUES = ('MKV', 'MP4')
-VIDEO_FORMAT_VALUES = ('MKV', 'MP4', 'ProRes')
 WINDOW_WIDTH = 720
 # Kept for compatibility with older integrations; live layout sizing is
 # content-driven in ``_resize_window_for_mode``.
@@ -170,11 +167,6 @@ def get_js_runtimes():
     return {'deno': {}}
 
 
-def get_prores_encoder():
-    """Return the appropriate ProRes encoder for the current platform."""
-    return 'prores_videotoolbox' if sys.platform == 'darwin' else 'prores_ks'
-
-
 class YDLLogger:
     def __init__(self, app):
         self.app = app
@@ -209,10 +201,9 @@ class DownloaderApp(ctk.CTk):
             self._logger.addHandler(logging.NullHandler())
         self.lang = "zh"
         self.download_folder = DEFAULT_DOWNLOAD_PATH
-        self.original_container = ORIGINAL_CONTAINER_DEFAULT
-        self.video_format = ORIGINAL_CONTAINER_DEFAULT
         self.proxy = ""
         self.load_settings()
+        self._last_output_folder = self.download_folder
 
         # Smooth progress state (main-thread animation)
         self._progress_target = 0.0
@@ -240,12 +231,22 @@ class DownloaderApp(ctk.CTk):
                 "err_no_subtitles": "没有找到符合所选语言的字幕",
                 "err_telegram_unsupported": "Danload 目前支持公开 t.me 频道视频链接；Telegram Web、私有群和受限内容不能直接粘贴下载。",
                 "btn_browse": "选择", "label_folder": "保存位置",
-                "label_video_format": "视频输出", "include_subtitles": "同时下载字幕",
+                "label_edit_compatible": "剪辑兼容转换", "btn_choose_video": "选择视频",
+                "edit_preset_auto": "自动", "edit_preset_h264": "H.264",
+                "edit_preset_hevc": "HEVC", "edit_preset_prores": "ProRes",
+                "edit_preset_ffv1": "FFV1",
+                "edit_hint_auto": "按素材自动选择 · 保留原文件",
+                "edit_hint_h264": "MP4 · 兼容时直拷，否则视觉近无损",
+                "edit_hint_hevc": "MP4 · 兼容时直拷，否则视觉近无损",
+                "edit_hint_prores": "MOV · 高质量剪辑中间格式",
+                "edit_hint_ffv1": "MKV · 数学无损，体积较大",
+                "status_edit_probe": "正在分析视频编码...",
+                "status_edit_done": "✅ 剪辑兼容视频已生成！（{format}）",
+                "include_subtitles": "同时下载字幕",
                 "sub_original_english": "原语言 + 英语", "sub_original": "原语言",
                 "sub_english": "英语", "sub_automatic": "自动字幕",
                 "label_proxy": "代理地址", "placeholder_proxy": "http://127.0.0.1:7890（可选）",
                 "status_done_original": "✅ 下载完成！（{container} 封装）",
-                "status_done_mkv_fallback": "✅ 下载完成！（MKV · 原画编码不兼容 MP4）",
                 "status_done_subtitles": "✅ 字幕下载完成！（{languages} · {format}）",
                 "status_done_video_subtitles": "✅ 视频与字幕下载完成！（{video} + {languages} · {format}）",
                 "status_partial_subtitles": "⚠️ 视频下载完成，但字幕下载失败（点击查看详情）",
@@ -265,12 +266,22 @@ class DownloaderApp(ctk.CTk):
                 "err_no_subtitles": "No subtitles matched the selected language",
                 "err_telegram_unsupported": "Danload currently supports public t.me channel video links. Telegram Web, private chats, and restricted content cannot be pasted directly.",
                 "btn_browse": "Browse", "label_folder": "Save to",
-                "label_video_format": "Video output", "include_subtitles": "Download subtitles",
+                "label_edit_compatible": "Editor-compatible", "btn_choose_video": "Choose Video",
+                "edit_preset_auto": "Auto", "edit_preset_h264": "H.264",
+                "edit_preset_hevc": "HEVC", "edit_preset_prores": "ProRes",
+                "edit_preset_ffv1": "FFV1",
+                "edit_hint_auto": "Quality-aware auto · source preserved",
+                "edit_hint_h264": "MP4 · copy or visually near-lossless",
+                "edit_hint_hevc": "MP4 · copy or visually near-lossless",
+                "edit_hint_prores": "MOV · high-quality editing intermediate",
+                "edit_hint_ffv1": "MKV · mathematically lossless, large",
+                "status_edit_probe": "Analyzing video codecs...",
+                "status_edit_done": "✅ Editor-compatible video ready! ({format})",
+                "include_subtitles": "Download subtitles",
                 "sub_original_english": "Original + English", "sub_original": "Original",
                 "sub_english": "English", "sub_automatic": "Automatic",
                 "label_proxy": "Proxy", "placeholder_proxy": "http://127.0.0.1:7890 (optional)",
                 "status_done_original": "✅ Done! ({container} container)",
-                "status_done_mkv_fallback": "✅ Done! (MKV - codec incompatible with MP4)",
                 "status_done_subtitles": "✅ Subtitles downloaded! ({languages} · {format})",
                 "status_done_video_subtitles": "✅ Video and subtitles downloaded! ({video} + {languages} · {format})",
                 "status_partial_subtitles": "⚠️ Video downloaded, but subtitles failed (click for details)",
@@ -290,12 +301,10 @@ class DownloaderApp(ctk.CTk):
         self.cookie_file_path = ctk.StringVar(value="")
         self.use_cookie_var = ctk.BooleanVar(value=False)
         self.proxy_var = ctk.StringVar(value=self.proxy)
-        self.video_format_var = ctk.StringVar(value=self._video_format_label(self.video_format))
-        # Compatibility alias for callers that still read the old variable.
-        self.original_container_var = self.video_format_var
         self.include_subtitles_var = ctk.BooleanVar(value=False)
         self.subtitle_policy = 'original_english'
         self.subtitle_format_var = ctk.StringVar(value='SRT')
+        self.editing_preset = 'auto'
 
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.build_main_ui()
@@ -328,40 +337,15 @@ class DownloaderApp(ctk.CTk):
         if isinstance(folder, str) and folder.strip():
             self.download_folder = folder
 
-        container = data.get('original_container')
-        if isinstance(container, str) and container.lower() in ('mkv', 'mp4'):
-            self.original_container = container.lower()
-
-        video_format = data.get('video_format', self.original_container)
-        if isinstance(video_format, str) and video_format.lower() in ('mkv', 'mp4', 'prores'):
-            self.video_format = video_format.lower()
-
         proxy = data.get('proxy')
         if isinstance(proxy, str):
             self.proxy = proxy
-
-    def _selected_original_container(self):
-        video_format_var = self.__dict__.get('video_format_var')
-        if video_format_var is not None:
-            value = video_format_var.get().strip().lower()
-        else:
-            value = str(self.__dict__.get(
-                'original_container', ORIGINAL_CONTAINER_DEFAULT)).strip().lower()
-        if value in ('mkv', 'mp4'):
-            return value
-        return ORIGINAL_CONTAINER_DEFAULT
-
-    @staticmethod
-    def _video_format_label(value):
-        return 'ProRes' if str(value).lower() == 'prores' else str(value).upper()
 
     def _save_settings(self):
         try:
             os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
             data = {
                 'download_folder': self.download_folder,
-                'original_container': self._selected_original_container(),
-                'video_format': self.video_format,
                 'proxy': self._get_proxy() or '',
             }
             with open(SETTINGS_PATH, 'w', encoding='utf-8') as f:
@@ -511,25 +495,6 @@ class DownloaderApp(ctk.CTk):
                          ("general_file", "opt_general")]:
             self._make_egg(val, key)
 
-        # Video output is one setting row, matching the other rounded rows.
-        self.video_output_frame = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=("#FFFFFF", "#2C2C2E"), corner_radius=10,
-            border_width=1, border_color=("#D1D1D6", "#3A3A3C"))
-        self.video_format_label = ctk.CTkLabel(
-            self.video_output_frame, text=self.t("label_video_format"),
-            font=("Helvetica Neue", 12), text_color=("#6E6E73", "#8E8E93"))
-        self.video_format_label.pack(side="left", padx=(14, 8), pady=9)
-
-        self.video_format_segment = ctk.CTkSegmentedButton(
-            self.video_output_frame,
-            values=list(VIDEO_FORMAT_VALUES),
-            variable=self.video_format_var,
-            width=225, height=28,
-            font=("Helvetica Neue", 12),
-            command=self.set_video_format)
-        self.video_format_segment.pack(side="right", padx=(4, 14), pady=9)
-
         # Subtitle controls are a separate setting row owned by video mode.
         self.subtitle_frame = ctk.CTkFrame(
             self.main_frame,
@@ -585,6 +550,49 @@ class DownloaderApp(ctk.CTk):
             font=("Helvetica Neue", 12),
             text_color=("#1D1D1F", "#FFFFFF"), anchor="w")
         self.folder_val_label.pack(side="left", fill="x", expand=True)
+
+        # Local compatibility conversion is independent from URL downloads.
+        self.edit_compatible_frame = ctk.CTkFrame(
+            self.main_frame,
+            fg_color=("#FFFFFF", "#2C2C2E"), corner_radius=10,
+            border_width=1, border_color=("#D1D1D6", "#3A3A3C"))
+        self.edit_compatible_frame.pack(fill="x", pady=(8, 0))
+
+        self.edit_compatible_label = ctk.CTkLabel(
+            self.edit_compatible_frame, text=self.t("label_edit_compatible"),
+            font=("Helvetica Neue", 12), text_color=("#6E6E73", "#8E8E93"))
+        self.edit_compatible_label.pack(side="left", padx=(14, 8), pady=9)
+
+        self.edit_compatible_hint = ctk.CTkLabel(
+            self.edit_compatible_frame, text=self.t("edit_hint_auto"),
+            font=("Helvetica Neue", 12),
+            text_color=("#1D1D1F", "#FFFFFF"), anchor="w")
+        self.edit_compatible_hint.pack(side="left", fill="x", expand=True)
+
+        self.editing_preset_menu = ctk.CTkOptionMenu(
+            self.edit_compatible_frame,
+            values=self._editing_preset_labels(),
+            width=84, height=28, corner_radius=6,
+            fg_color=("#F5F5F7", "#1C1C1E"),
+            button_color=("#E5E5EA", "#3A3A3C"),
+            button_hover_color=("#D1D1D6", "#48484A"),
+            text_color=("#1D1D1F", "#FFFFFF"),
+            font=("Helvetica Neue", 11),
+            dropdown_font=("Helvetica Neue", 11),
+            command=self.set_editing_preset)
+        self.editing_preset_menu.set(self.t("edit_preset_auto"))
+        self.editing_preset_menu.pack(side="left", padx=(6, 2), pady=9)
+
+        self.edit_compatible_btn = ctk.CTkButton(
+            self.edit_compatible_frame, text=self.t("btn_choose_video"),
+            width=92, height=28,
+            fg_color="transparent", border_width=1,
+            border_color=("#D1D1D6", "#3A3A3C"),
+            text_color=("#1D1D1F", "#FFFFFF"),
+            hover_color=("#E5E5EA", "#3A3A3C"),
+            font=("Helvetica Neue", 12), corner_radius=6,
+            command=self.browse_compatibility_video)
+        self.edit_compatible_btn.pack(side="right", padx=(4, 14), pady=9)
 
         # Options (Cookie)
         opts_frame = ctk.CTkFrame(
@@ -710,7 +718,11 @@ class DownloaderApp(ctk.CTk):
         self.proxy_entry.configure(placeholder_text=self.t("placeholder_proxy"))
         self.folder_key_label.configure(text=self.t("label_folder"))
         self.folder_btn.configure(text=self.t("btn_browse"))
-        self.video_format_label.configure(text=self.t('label_video_format'))
+        self.edit_compatible_label.configure(text=self.t("label_edit_compatible"))
+        self.editing_preset_menu.configure(values=self._editing_preset_labels())
+        self.editing_preset_menu.set(self.t(f"edit_preset_{self.editing_preset}"))
+        self._update_editing_hint()
+        self.edit_compatible_btn.configure(text=self.t("btn_choose_video"))
         self.subtitle_switch.configure(text=self.t('include_subtitles'))
         self.subtitle_language_menu.configure(values=self._subtitle_policy_labels())
         self.subtitle_language_menu.set(self.t({
@@ -771,14 +783,12 @@ class DownloaderApp(ctk.CTk):
                 btn.configure(text=f"🥚 {self.t(btn.text_key)}",
                               text_color=("#6E6E73", "#8E8E93"),
                               font=("Helvetica Neue", 13, "normal"))
-        if hasattr(self, 'video_output_frame'):
+        if hasattr(self, 'subtitle_frame'):
             self._show_video_options(selected_value)
 
     def _show_video_options(self, selected_value):
-        for frame in (self.video_output_frame, self.subtitle_frame):
-            frame.pack_forget()
+        self.subtitle_frame.pack_forget()
         if selected_value == 'video':
-            self.video_output_frame.pack(fill='x', pady=(8, 0), before=self.folder_frame)
             self.subtitle_frame.pack(fill='x', pady=(8, 0), before=self.folder_frame)
             self.update_subtitle_controls()
         else:
@@ -882,25 +892,20 @@ class DownloaderApp(ctk.CTk):
         if value in values:
             self.subtitle_policy = policies[values.index(value)]
 
-    def set_video_format(self, value):
-        video_format = (value or '').lower()
-        if video_format not in ('mkv', 'mp4', 'prores'):
-            video_format = ORIGINAL_CONTAINER_DEFAULT
-            self.video_format_var.set(self._video_format_label(video_format))
-        self.video_format = video_format
-        if video_format in ('mkv', 'mp4'):
-            self.original_container = video_format
-        self._save_settings()
+    def _editing_preset_labels(self):
+        return [self.t(f'edit_preset_{preset}') for preset in (
+            'auto', 'h264', 'hevc', 'prores', 'ffv1')]
 
-    def set_original_container(self, value):
-        """Compatibility wrapper for the pre-video-output setting API."""
-        container = (value or '').lower()
-        if container not in ('mkv', 'mp4'):
-            container = ORIGINAL_CONTAINER_DEFAULT
-            video_format_var = self.__dict__.get('video_format_var')
-            if video_format_var is not None:
-                video_format_var.set(self._video_format_label(container))
-        self.set_video_format(container)
+    def set_editing_preset(self, value):
+        presets = ('auto', 'h264', 'hevc', 'prores', 'ffv1')
+        labels = self._editing_preset_labels()
+        if value in labels:
+            self.editing_preset = presets[labels.index(value)]
+            self._update_editing_hint()
+
+    def _update_editing_hint(self):
+        self.edit_compatible_hint.configure(
+            text=self.t(f'edit_hint_{self.editing_preset}'))
 
     # ── Smooth progress animation (main thread) ──────────────────────────────
 
@@ -1200,7 +1205,11 @@ class DownloaderApp(ctk.CTk):
     def _probe_media(self, path):
         result = self._run_cancellable_process([
             get_ffprobe_path(), '-v', 'error',
-            '-show_entries', 'format=format_name:stream=codec_type,codec_name',
+            '-show_entries',
+            'format=format_name,duration:'
+            'stream=codec_type,codec_name,profile,pix_fmt,width,height,'
+            'sample_aspect_ratio,r_frame_rate,avg_frame_rate,color_range,color_space,'
+            'color_transfer,color_primaries,channels,channel_layout,sample_rate',
             '-of', 'json', path,
         ], check=True, capture_output=True)
         output = result.stdout or b'{}'
@@ -1224,9 +1233,13 @@ class DownloaderApp(ctk.CTk):
         stream_types = {stream.get('codec_type') for stream in streams}
         accepted_formats = {
             'mkv': {'matroska', 'webm'},
+            'webm': {'webm', 'matroska'},
             'mp4': {'mov', 'mp4'},
+            'm4v': {'mov', 'mp4'},
             'mov': {'mov', 'mp4'},
-        }[expected_container]
+            'flv': {'flv'},
+            'ts': {'mpegts'},
+        }.get(expected_container, {expected_container})
         if not format_names.intersection(accepted_formats):
             raise RuntimeError(
                 f'Final video container mismatch: expected {expected_container}, '
@@ -1234,38 +1247,232 @@ class DownloaderApp(ctk.CTk):
         if 'video' not in stream_types or 'audio' not in stream_types:
             raise RuntimeError(
                 'Final video is incomplete: both video and audio streams are required')
-        if expected_container == 'mov':
-            video_codecs = {
-                stream.get('codec_name') for stream in streams
-                if stream.get('codec_type') == 'video'
-            }
-            if not any((codec or '').startswith('prores') for codec in video_codecs):
-                raise RuntimeError('Final MOV does not contain a ProRes video stream')
         self._log_diagnostic(
             'validated output=%s container=%s streams=%s', path,
             expected_container, ','.join(sorted(stream_types)))
 
-    def _ensure_mkv_output(self, base_filename):
-        destination = f'{base_filename}.mkv'
-        source = next((
-            f'{base_filename}{ext}'
-            for ext in ('.mp4', '.webm', '.flv', '.ts', '.m4v')
-            if os.path.isfile(f'{base_filename}{ext}')
+    @staticmethod
+    def _media_rate(value):
+        if not value or value == '0/0':
+            return 0.0
+        try:
+            numerator, denominator = str(value).split('/', 1)
+            return float(numerator) / float(denominator)
+        except (ValueError, ZeroDivisionError):
+            return 0.0
+
+    @staticmethod
+    def _primary_video_stream(probe):
+        return next((
+            stream for stream in (probe.get('streams') or [])
+            if stream.get('codec_type') == 'video'
         ), None)
-        if source is None and os.path.isfile(destination):
-            return destination
-        if source is None:
-            raise RuntimeError('Downloaded media could not be located for MKV packaging')
-        destination = self._next_available_path(destination)
-        temporary = self._conversion_temp_path(destination)
-        self._track_artifact(temporary)
-        self._run_cancellable_process([
-            get_ffmpeg_path(), '-y', '-i', source, '-c', 'copy', temporary,
-        ], check=True, capture_output=True)
-        self._track_artifact(destination)
-        os.replace(temporary, destination)
-        self._remove_artifact_if_unprotected(source)
-        return destination
+
+    def _editing_output_path(self, source, extension='.mov'):
+        root, _extension = os.path.splitext(os.path.abspath(source))
+        return self._next_available_path(f'{root}.edit-ready{extension}')
+
+    def _build_editing_conversion_command(self, source, destination, probe,
+                                          preset='auto'):
+        plan = editing_conversion_plan(probe, preset)
+        video = self._primary_video_stream(probe) or {}
+        args = [
+            get_ffmpeg_path(), '-y', '-hide_banner', '-loglevel', 'error',
+            # Keep portrait/rotation display metadata instead of baking a
+            # transform into the pixels and changing the source geometry.
+            '-noautorotate', '-i', source,
+            '-map', '0:v:0', '-map', '0:a?',
+            '-map_metadata', '0', '-map_chapters', '0',
+        ]
+
+        if plan['copy_video']:
+            args.extend(['-c:v', 'copy'])
+        else:
+            codec_args = {'h264': ['-c:v', 'libx264', '-crf', '18', '-preset', 'slow'],
+                          'hevc': ['-c:v', 'libx265', '-crf', '18', '-preset', 'slow'],
+                          'prores': ['-c:v', 'prores_ks', '-profile:v', str(plan['video_profile'])],
+                          'ffv1': ['-c:v', 'ffv1', '-level', '3']}
+            args.extend(codec_args[plan['target_codec']])
+            args.extend(['-pix_fmt', plan['output_pixel_format']])
+            color_options = {
+                'color_range': '-color_range',
+                'color_space': '-colorspace',
+                'color_transfer': '-color_trc',
+                'color_primaries': '-color_primaries',
+            }
+            for field, option in color_options.items():
+                value = str(video.get(field) or '').lower()
+                if value and value not in ('unknown', 'unspecified', 'reserved'):
+                    args.extend([option, value])
+
+        args.extend(['-c:a', plan['audio_codec'], '-fps_mode', 'passthrough'])
+        if plan['container'] in ('mov', 'mp4'):
+            args.extend(['-movflags', '+faststart+use_metadata_tags'])
+        args.extend(['-progress', 'pipe:1', '-nostats', destination])
+        return args, plan
+
+    def _run_editing_ffmpeg(self, args, duration):
+        """Run ffmpeg with progress reporting through the shared cancel state."""
+        self._raise_if_cancelled()
+        process = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8', errors='replace', bufsize=1)
+        with self._resource_lock:
+            self._active_processes.add(process)
+        recent_output = []
+        returncode = None
+        try:
+            for raw_line in process.stdout or ():
+                line = raw_line.strip()
+                recent_output.append(line)
+                del recent_output[:-80]
+                if line.startswith(('out_time_us=', 'out_time_ms=')) and duration > 0:
+                    try:
+                        elapsed = int(line.split('=', 1)[1]) / 1_000_000
+                    except (ValueError, IndexError):
+                        continue
+                    fraction = max(0.0, min(1.0, elapsed / duration))
+                    self._advance_progress('conversion', fraction)
+                    self._set_status(
+                        text=(f'Converting {fraction * 100:.1f}%' if self.lang == 'en'
+                              else f'转换中 {fraction * 100:.1f}%'),
+                        text_color=("#FF9500", "#FF9F0A"))
+                self._raise_if_cancelled()
+            returncode = process.wait()
+        except BaseException:
+            # Cancellation can race with the shared interrupt worker. Make
+            # this runner self-contained so ffmpeg cannot outlive the thread.
+            try:
+                if process.poll() is None:
+                    process.terminate()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=1.0)
+                except Exception:
+                    pass
+            raise
+        finally:
+            with self._resource_lock:
+                self._active_processes.discard(process)
+        self._raise_if_cancelled()
+        if returncode:
+            errors = [
+                line for line in recent_output
+                if line and not re.match(r'^[a-z_]+=', line)
+            ]
+            detail = ' | '.join(errors[-4:]) or f'ffmpeg exit code {returncode}'
+            raise RuntimeError(f'Editor-compatible conversion failed: {detail}')
+
+    def _validate_editing_output(self, source_probe, output_path, plan=None):
+        if not output_path or not os.path.isfile(output_path):
+            raise RuntimeError('Editor-compatible output is missing')
+        output_probe = self._probe_media(output_path)
+        format_names = set(
+            (output_probe.get('format') or {}).get('format_name', '').split(','))
+        plan = plan or editing_conversion_plan(source_probe)
+        expected_container = plan['container']
+        accepted_formats = {'mkv': {'matroska', 'webm'}, 'mp4': {'mov', 'mp4'},
+                             'mov': {'mov', 'mp4'}}[expected_container]
+        if not format_names.intersection(accepted_formats):
+            raise RuntimeError('Editor-compatible output container does not match the selected preset')
+
+        source_video = self._primary_video_stream(source_probe)
+        output_video = self._primary_video_stream(output_probe)
+        if source_video is None or output_video is None:
+            raise RuntimeError('Editor-compatible output is missing its video stream')
+        output_codec = str(output_video.get('codec_name') or '').lower()
+        codec_matches = {
+            'h264': output_codec in {'h264', 'avc1'},
+            'hevc': output_codec in {'hevc', 'h265'},
+            'prores': output_codec.startswith('prores'),
+            'ffv1': output_codec == 'ffv1',
+        }
+        if not codec_matches.get(plan['target_codec'], False):
+            raise RuntimeError('Editor-compatible output codec does not match the selected preset')
+
+        source_size = (source_video.get('width'), source_video.get('height'))
+        output_size = (output_video.get('width'), output_video.get('height'))
+        if all(source_size) and source_size != output_size:
+            raise RuntimeError(
+                f'Editor-compatible output changed resolution: {source_size} -> {output_size}')
+
+        source_sar = str(source_video.get('sample_aspect_ratio') or '').lower()
+        output_sar = str(output_video.get('sample_aspect_ratio') or '').lower()
+        if (source_sar not in ('', '0:1', 'unknown', 'unspecified')
+                and source_sar != output_sar):
+            raise RuntimeError(
+                f'Editor-compatible output changed sample aspect ratio: '
+                f'{source_sar} -> {output_sar or "unknown"}')
+
+        source_rate = self._media_rate(
+            source_video.get('avg_frame_rate') or source_video.get('r_frame_rate'))
+        output_rate = self._media_rate(
+            output_video.get('avg_frame_rate') or output_video.get('r_frame_rate'))
+        if source_rate and output_rate and abs(source_rate - output_rate) / source_rate > 0.005:
+            raise RuntimeError(
+                f'Editor-compatible output changed frame rate: {source_rate:g} -> {output_rate:g}')
+
+        for field in ('color_range', 'color_space', 'color_transfer', 'color_primaries'):
+            source_value = str(source_video.get(field) or '').lower()
+            output_value = str(output_video.get(field) or '').lower()
+            if field == 'color_range':
+                range_aliases = {
+                    'limited': 'tv', 'mpeg': 'tv',
+                    'full': 'pc', 'jpeg': 'pc',
+                }
+                source_value = range_aliases.get(source_value, source_value)
+                output_value = range_aliases.get(output_value, output_value)
+                # H.264/HEVC/ProRes encoders may omit the VUI flag for their
+                # default limited-range YUV output even when -color_range tv
+                # was supplied. Regular yuv* pixel formats still carry that
+                # limited-range interpretation; full-range yuvj*/RGB does not.
+                output_pixel_format = str(output_video.get('pix_fmt') or '').lower()
+                if (source_value == 'tv' and not output_value
+                        and output_pixel_format.startswith('yuv')
+                        and not output_pixel_format.startswith('yuvj')):
+                    continue
+            if (source_value not in ('', 'unknown', 'unspecified', 'reserved')
+                    and source_value != output_value):
+                raise RuntimeError(
+                    f'Editor-compatible output changed {field}: '
+                    f'{source_value} -> {output_value or "unknown"}')
+
+        source_audio = [
+            stream for stream in (source_probe.get('streams') or [])
+            if stream.get('codec_type') == 'audio']
+        output_audio = [
+            stream for stream in (output_probe.get('streams') or [])
+            if stream.get('codec_type') == 'audio']
+        if len(source_audio) != len(output_audio):
+            raise RuntimeError(
+                'Editor-compatible output did not preserve every audio stream')
+        for source_stream, output_stream in zip(source_audio, output_audio):
+            for field in ('channels', 'channel_layout', 'sample_rate'):
+                if (source_stream.get(field) and output_stream.get(field)
+                        and str(source_stream[field]) != str(output_stream[field])):
+                    raise RuntimeError(
+                        f'Editor-compatible output changed audio {field}')
+
+        try:
+            source_duration = float((source_probe.get('format') or {}).get('duration') or 0)
+            output_duration = float((output_probe.get('format') or {}).get('duration') or 0)
+        except (TypeError, ValueError):
+            source_duration = output_duration = 0
+        if source_duration and output_duration and abs(source_duration - output_duration) > 0.5:
+            raise RuntimeError('Editor-compatible output duration does not match the source')
+        self._log_diagnostic(
+            'validated editor output=%s codec=%s size=%sx%s fps=%s audio_streams=%s',
+            output_path, output_video.get('codec_name'), *output_size,
+            output_rate, len(output_audio))
+        return output_probe
 
     @staticmethod
     def _conversion_temp_path(destination):
@@ -1348,51 +1555,6 @@ class DownloaderApp(ctk.CTk):
             return meta_lang[:2]
         return 'en'
 
-    def _remux_to_mp4(self, base_filename):
-        """Remux the downloaded file to MP4 using ``-c copy``.
-
-        Always merges to MKV during download, so this step converts the
-        resulting MKV (or other container) to MP4. If the codec is
-        incompatible with the MP4 container (e.g. FLAC audio), the
-        remux fails gracefully and the original file is kept.
-
-        Returns ``'mp4'`` on success, or the original extension (e.g.
-        ``'mkv'``) if the remux was skipped or failed.
-        """
-        for ext in ['.mkv', '.webm', '.flv', '.ts', '.m4v', '.mp4']:
-            src = f"{base_filename}{ext}"
-            if not os.path.exists(src):
-                continue
-            if ext == '.mp4':
-                self._last_remux_path = src
-                return 'mp4'
-            dst = f"{base_filename}.mp4"
-            if os.path.exists(dst):
-                # Never replace an existing output.  In normal downloads the
-                # transaction marks old files as protected; using a sibling
-                # name here also keeps direct helper calls non-destructive.
-                dst = self._next_available_path(dst)
-            temporary = None
-            try:
-                temporary = self._conversion_temp_path(dst)
-                self._track_artifact(temporary)
-                self._run_cancellable_process([
-                    get_ffmpeg_path(), '-y', '-i', src,
-                    '-c', 'copy', '-movflags', '+faststart', temporary
-                ], check=True, capture_output=True)
-                self._track_artifact(dst)
-                os.replace(temporary, dst)
-                self._remove_artifact_if_unprotected(src)
-                self._last_remux_path = dst
-                return 'mp4'
-            except subprocess.CalledProcessError:
-                if temporary and os.path.exists(temporary):
-                    self._remove_artifact_if_unprotected(temporary)
-                self._last_remux_path = src
-                return ext.lstrip('.')
-        self._last_remux_path = None
-        return 'mkv'
-
     # ── File / folder pickers ────────────────────────────────────────────────
 
     def browse_cookie_file(self):
@@ -1410,18 +1572,107 @@ class DownloaderApp(ctk.CTk):
             initialdir=self.download_folder)
         if path:
             self.download_folder = path
+            self._last_output_folder = path
             self.folder_val_label.configure(text=self._short_path(path))
             self._save_settings()
 
+    def browse_compatibility_video(self):
+        if self.download_btn.cget('state') == 'disabled':
+            return
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title=("选择要转换的视频" if self.lang == "zh"
+                   else "Choose a Video to Convert"),
+            filetypes=[
+                ("Video files", "*.mkv *.mp4 *.mov *.webm *.flv *.ts *.m4v *.avi"),
+                ("All files", "*.*"),
+            ],
+            initialdir=self._last_output_folder)
+        if path:
+            self.start_compatibility_conversion(path)
+
+    def start_compatibility_conversion(self, source):
+        source = os.path.abspath(source)
+        if not os.path.isfile(source):
+            self.status_label.configure(
+                text=("找不到所选视频" if self.lang == "zh"
+                      else "The selected video could not be found"),
+                text_color=("#FF3B30", "#FF453A"))
+            return
+
+        self._ensure_download_state()
+        self.is_cancelled = False
+        self._cancel_event.clear()
+        self._begin_download_transaction(os.path.dirname(source))
+        self.cleanup_target = None
+        self._last_url = ''
+        self._last_error = ''
+        self._last_output_folder = os.path.dirname(source)
+
+        self.download_btn.configure(state='disabled')
+        self.edit_compatible_btn.configure(state='disabled')
+        self.cancel_btn.configure(state='normal')
+        self._start_progress_animation()
+        self.status_label.configure(
+            text=self.t('status_edit_probe'),
+            text_color=("#0071E3", "#0A84FF"))
+        preset = self.editing_preset
+        threading.Thread(
+            target=self.convert_for_editing, args=(source, preset), daemon=True).start()
+
+    def convert_for_editing(self, source, preset='auto'):
+        temporary = None
+        try:
+            self._progress_stage = 'conversion'
+            source_probe = self._probe_media(source)
+            plan = editing_conversion_plan(source_probe, preset)
+            destination = self._editing_output_path(source, plan['extension'])
+            temporary = self._conversion_temp_path(destination)
+            args, plan = self._build_editing_conversion_command(
+                source, temporary, source_probe, preset)
+            self._track_artifact(temporary)
+            self._set_status(
+                text=(f"正在转换为 {plan['video_label']}..." if self.lang == 'zh'
+                      else f"Converting to {plan['video_label']}..."),
+                text_color=("#FF9500", "#FF9F0A"))
+            try:
+                duration = float(
+                    (source_probe.get('format') or {}).get('duration') or 0)
+            except (TypeError, ValueError):
+                duration = 0
+            self._run_editing_ffmpeg(args, duration)
+            self._raise_if_cancelled()
+
+            self._track_artifact(destination)
+            os.replace(temporary, destination)
+            temporary = None
+            self._validate_editing_output(source_probe, destination, plan)
+            self._advance_progress('complete', 1.0)
+            self._set_status(
+                text=self.t('status_edit_done').format(format=plan['video_label']),
+                text_color=("#34C759", "#30D158"))
+        except Exception as error:
+            if not self._cancel_requested():
+                self._cleanup_download_artifacts()
+            self.handle_error(
+                RuntimeError('CANCELLED_BY_USER') if self._cancel_requested()
+                else error)
+        finally:
+            if temporary and os.path.exists(temporary):
+                self._remove_artifact_if_unprotected(temporary)
+            self.reset_ui_state()
+
     def open_download_folder(self):
-        os.makedirs(self.download_folder, exist_ok=True)
+        output_folder = self.__dict__.get(
+            '_last_output_folder', self.download_folder)
+        os.makedirs(output_folder, exist_ok=True)
         try:
             if sys.platform == 'darwin':
-                subprocess.run(["open", self.download_folder])
+                subprocess.run(["open", output_folder])
             elif os.name == 'nt':
-                os.startfile(self.download_folder)
+                os.startfile(output_folder)
             else:
-                subprocess.run(["xdg-open", self.download_folder])
+                subprocess.run(["xdg-open", output_folder])
         except Exception:
             pass
 
@@ -1580,14 +1831,16 @@ class DownloaderApp(ctk.CTk):
         self._cancel_event.clear()
         self._begin_download_transaction(self.download_folder)
         self.cleanup_target = None
-        download_type, original_container, include_subtitles = resolve_download_selection(
-            self.option_var.get(), self.video_format_var.get(),
+        download_type, _unused_container, include_subtitles = resolve_download_selection(
+            self.option_var.get(), None,
             self.include_subtitles_var.get())
         request_config = self._build_request_config(include_subtitles)
         self._last_url = url
         self._last_error = ""
+        self._last_output_folder = self.download_folder
 
         self.download_btn.configure(state="disabled")
+        self.edit_compatible_btn.configure(state="disabled")
         self.cancel_btn.configure(state="normal")
         self._start_progress_animation()
 
@@ -1596,7 +1849,7 @@ class DownloaderApp(ctk.CTk):
 
         target = self.download_general_file if download_type == 'general_file' else self.download_media
         args = ((url, request_config.get('proxy')) if download_type == 'general_file'
-                else (url, download_type, original_container, request_config))
+                else (url, download_type, _unused_container, request_config))
         threading.Thread(target=target, args=args, daemon=True).start()
 
     def reset_ui_state(self):
@@ -1614,6 +1867,9 @@ class DownloaderApp(ctk.CTk):
                 self._progress_displayed = 0.0
                 self.progress_bar.set(0)
             self.download_btn.configure(state="normal")
+            edit_button = self.__dict__.get('edit_compatible_btn')
+            if edit_button is not None:
+                edit_button.configure(state="normal")
             self.cancel_btn.configure(state="disabled")
             self.is_cancelled = False
             self._cancel_event.clear()
@@ -1735,17 +1991,77 @@ class DownloaderApp(ctk.CTk):
         root, _ = os.path.splitext(prepared)
         if not root:
             return current
-        media_extensions = ('.mkv', '.mp4', '.webm', '.m4a', '.mp3', '.mov',
-                            '.flv', '.ts', '.part', '.ytdl')
-        if not any(os.path.exists(f'{root}{extension}') for extension in media_extensions):
+
+        def occupied(candidate_root):
+            directory = os.path.dirname(candidate_root) or os.curdir
+            stem = os.path.basename(candidate_root)
+            try:
+                with os.scandir(directory) as entries:
+                    return any(
+                        entry.is_file(follow_symlinks=False)
+                        and entry.name.startswith(f'{stem}.')
+                        for entry in entries)
+            except OSError:
+                return False
+
+        if not occupied(root):
             return current
         index = 1
-        while any(os.path.exists(f'{root} ({index}){extension}')
-                  for extension in media_extensions):
+        while occupied(f'{root} ({index})'):
             index += 1
         unique_root = f'{root} ({index})'
         self._log_diagnostic('output collision; using %s', unique_root)
         return f'{unique_root}.%(ext)s'
+
+    @staticmethod
+    def _locate_downloaded_media(base_filename, info=None):
+        """Find yt-dlp's completed media file without imposing a container list."""
+        candidates = []
+        info = info if isinstance(info, dict) else {}
+        for key in ('filepath', 'filename', '_filename'):
+            value = info.get(key)
+            if isinstance(value, str) and value:
+                candidates.append(value)
+
+        def usable(path):
+            return (isinstance(path, str) and os.path.isfile(path)
+                    and not path.endswith(('.part', '.ytdl')))
+
+        for path in candidates:
+            if usable(path):
+                return path
+
+        base_directory = (os.path.dirname(base_filename)
+                          if isinstance(base_filename, str) else '')
+        for path in candidates:
+            if not isinstance(path, str) or os.path.isabs(path):
+                continue
+            relative_path = os.path.join(base_directory or os.curdir, path)
+            if usable(relative_path):
+                return relative_path
+
+        if not isinstance(base_filename, str) or not base_filename:
+            return None
+        directory = os.path.dirname(base_filename) or os.curdir
+        stem = os.path.basename(base_filename)
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            return None
+        with entries:
+            matches = []
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                name = entry.name
+                if not name.startswith(f'{stem}.'):
+                    continue
+                if name.endswith(('.part', '.ytdl')):
+                    continue
+                matches.append(entry.path)
+        if not matches:
+            return None
+        return max(matches, key=lambda path: os.path.getmtime(path))
 
     @staticmethod
     def _attempt_options(base_options, credential_type, credential_value, conservative):
@@ -1839,16 +2155,18 @@ class DownloaderApp(ctk.CTk):
             ("#34C759", "#30D158"))
         return True
 
-    def download_media(self, url, download_type, original_container=None, request_config=None):
+    def download_media(self, url, download_type, _unused_container=None, request_config=None):
+        # Accept the short integration form ``download_media(url, mode, config)``
+        # while retaining the historical container placeholder as the third
+        # positional argument.
+        if request_config is None and isinstance(_unused_container, dict):
+            request_config = _unused_container
         request_config = request_config or {}
         proxy = request_config.get('proxy')
         include_subtitles = bool(request_config.get('include_subtitles')) \
-            and download_type in ('video_original', 'video_prores')
+            and download_type == 'video'
         output_path = self.download_folder
         os.makedirs(output_path, exist_ok=True)
-        if original_container not in ('mkv', 'mp4'):
-            original_container = ORIGINAL_CONTAINER_DEFAULT
-
         host = urlparse(url).netloc.lower().split(':', 1)[0].removeprefix('www.')
         is_douyin   = any(d in host for d in ['douyin.com', 'iesdouyin.com', 'tiktok.com'])
         is_telegram = self.is_telegram_url(url)
@@ -1914,7 +2232,7 @@ class DownloaderApp(ctk.CTk):
 
         ydl_opts = {
             'outtmpl': os.path.join(output_path, '%(title)s.%(ext)s'),
-            'noplaylist': bool(download_type == 'video_prores' or not is_telegram),
+            'noplaylist': bool(not is_telegram),
             'progress_hooks': [self.progress_hook],
             'postprocessor_hooks': [self.postprocessor_hook],
             'concurrent_fragment_downloads': 4,
@@ -1971,17 +2289,10 @@ class DownloaderApp(ctk.CTk):
                                     'preferredcodec': 'mp3', 'preferredquality': '320'}]
             })
         else:
-            # Target container the user wants for original video
-            target_container = (original_container if download_type == 'video_original'
-                                else ORIGINAL_CONTAINER_DEFAULT)
-            # Always merge to MKV first (universal codec compatibility),
-            # then remux to MP4 afterward if requested. This avoids merge
-            # failures when the source uses codecs that MP4 cannot hold
-            # (e.g. B站 HEVC video + FLAC audio).
-            ydl_opts.update({
-                'format': media_format_selector(download_type),
-                'merge_output_format': 'mkv',
-            })
+            # Keep yt-dlp's actual merged container and extension. A container
+            # selector here would imply compatibility that the codec cannot
+            # provide, so downloads never perform a post-download remux.
+            ydl_opts.update({'format': media_format_selector('video')})
         COOKIE_ERR = [
             'cookie', 'fresh', 'login', 'sign check', 'sign in', 'not a bot',
             'confirm you', 'could not find', 'database', 'no such file',
@@ -2062,81 +2373,40 @@ class DownloaderApp(ctk.CTk):
                 raise last_err or Exception("所有下载方案均无效")
             self._raise_if_cancelled()
 
-            # ── MP4 remux (convert from MKV if user selected MP4) ───────────
-            actual_container = ORIGINAL_CONTAINER_DEFAULT
+            # yt-dlp has already merged the selected streams into its native
+            # final container. Locate and validate that result without changing
+            # its extension or codec.
             final_video_path = None
-            if download_type == 'video_original' and target_container == 'mp4' \
-                    and not self._cancel_requested():
-                self._advance_progress('postprocess', 0.1)
-                self._set_status(
-                    text="📦 封装为 MP4..." if self.lang == "zh" else "📦 Remuxing to MP4...",
-                    text_color=("#FF9500", "#FF9F0A"))
-                actual_container = self._remux_to_mp4(base_filename)
-                if actual_container == 'mp4':
-                    final_video_path = getattr(
-                        self, '_last_remux_path', f'{base_filename}.mp4')
-                else:
-                    final_video_path = self._ensure_mkv_output(base_filename)
-                    actual_container = 'mkv'
-                self._advance_progress('postprocess', 1.0)
-            elif download_type == 'video_original':
-                final_video_path = self._ensure_mkv_output(base_filename)
+            actual_container = None
+            if download_type == 'video':
+                final_video_path = self._locate_downloaded_media(base_filename, info)
+                if final_video_path is None:
+                    raise RuntimeError('Downloaded media could not be located')
+                actual_container = os.path.splitext(final_video_path)[1].lstrip('.').lower()
 
-            # ── ProRes transcode ──────────────────────────────────────────────
             video_result = None
-            if download_type == 'video_prores':
-                orig = next(
-                    (f"{base_filename}{ext}" for ext in ['.mp4', '.mkv', '.webm', '.flv', '.ts', '.m4v']
-                     if os.path.exists(f"{base_filename}{ext}")), None)
-                if orig is None:
-                    raise RuntimeError('Downloaded media could not be located for ProRes conversion')
-                self._advance_progress('postprocess', 0.1)
-                self._set_status(
-                    text="🎬 Transcoding to ProRes..." if self.lang == "en" else "🎬 正在转码 ProRes...",
-                    text_color=("#FF9500", "#FF9F0A"))
-                mov_path = f"{base_filename}.mov"
-                mov_path = self._next_available_path(mov_path)
-                temporary = self._conversion_temp_path(mov_path)
-                self._track_artifact(temporary)
-                self._run_cancellable_process([
-                    get_ffmpeg_path(), '-y', '-i', orig,
-                    '-c:v', get_prores_encoder(), '-profile:v', '2',
-                    '-c:a', 'aac', '-b:a', '320k', '-map_metadata', '0',
-                    temporary], check=True)
-                self._track_artifact(mov_path)
-                os.replace(temporary, mov_path)
-                self._remove_artifact_if_unprotected(orig)
-                final_video_path = mov_path
-                self._advance_progress('postprocess', 1.0)
-                self._set_status(
-                    text="✅ ProRes ready! Drag into Final Cut Pro" if self.lang == "en"
-                         else "✅ ProRes 转码完成！可拖入 Final Cut Pro",
-                    text_color=("#34C759", "#30D158"))
-                video_result = 'ProRes MOV'
-            elif download_type == 'audio':
-                self._set_status(
-                    text="✅ Audio extracted as MP3" if self.lang == "en" else "✅ 音频提取完成（MP3）",
-                    text_color=("#34C759", "#30D158"))
-            elif is_telegram:
+            if is_telegram and download_type == 'video':
                 video_result = actual_container.upper()
                 self._set_status(
                     text="✅ Telegram video downloaded!" if self.lang == "en" else "✅ Telegram 视频下载完成！",
                     text_color=("#34C759", "#30D158"))
-            else:
+            elif download_type == 'video':
                 video_result = actual_container.upper()
-                if actual_container == 'mkv' and target_container == 'mp4':
-                    self._set_status(
-                        text=self.t("status_done_mkv_fallback"),
-                        text_color=("#34C759", "#30D158"))
-                else:
-                    self._set_status(
-                        text=self.t("status_done_original").format(
-                            container=actual_container.upper()),
-                        text_color=("#34C759", "#30D158"))
+                self._set_status(
+                    text=self.t("status_done_original").format(
+                        container=actual_container.upper()),
+                    text_color=("#34C759", "#30D158"))
+            elif download_type == 'audio':
+                self._set_status(
+                    text="✅ Audio extracted as MP3" if self.lang == "en" else "✅ 音频提取完成（MP3）",
+                    text_color=("#34C759", "#30D158"))
+            else:
+                self._set_status(
+                    text="✅ File downloaded!" if self.lang == "en" else "✅ 文件下载完成！",
+                    text_color=("#34C759", "#30D158"))
 
             if final_video_path:
-                expected_container = 'mov' if download_type == 'video_prores' else actual_container
-                self._validate_video_output(final_video_path, expected_container)
+                self._validate_video_output(final_video_path, actual_container)
 
             if include_subtitles:
                 self._raise_if_cancelled()
@@ -2205,8 +2475,7 @@ class DownloaderApp(ctk.CTk):
                     video_url, output_path, title, audio_only=True, proxy=proxy)
             else:
                 return self._douyin_download_and_convert(
-                    video_url, output_path, title, audio_only=False,
-                    prores=(download_type == 'video_prores'), proxy=proxy)
+                    video_url, output_path, title, audio_only=False, proxy=proxy)
         except Exception as error:
             self._raise_if_cancelled()
             self._log_diagnostic('native Douyin download failed; falling back to yt-dlp: %s', error)
@@ -2214,7 +2483,7 @@ class DownloaderApp(ctk.CTk):
             return False
 
     def _douyin_download_and_convert(self, video_url, output_path, title,
-                                     audio_only=False, prores=False, proxy=None):
+                                     audio_only=False, proxy=None):
         ext = '.mp4'
         filepath = self._next_available_path(os.path.join(output_path, f"{title}{ext}"))
         tmp_filepath = f'{filepath}.part'
@@ -2270,33 +2539,13 @@ class DownloaderApp(ctk.CTk):
             os.replace(temporary, mp3_path)
             self._remove_artifact_if_unprotected(source_path)
             msg = "✅ 音频提取完成（MP3）" if self.lang == "zh" else "✅ Audio extracted (MP3)"
-        elif prores:
-            mov_path = self._next_available_path(
-                os.path.join(output_path, f"{title}.mov"))
-            temporary = self._conversion_temp_path(mov_path)
-            self._track_artifact(temporary)
-            self._advance_progress('postprocess', 0.1)
-            self._set_status(
-                text="🎬 正在转码 ProRes..." if self.lang == "zh" else "🎬 Transcoding to ProRes...",
-                text_color=("#FF9500", "#FF9F0A"))
-            self._run_cancellable_process([
-                get_ffmpeg_path(), '-y', '-i', source_path,
-                '-c:v', get_prores_encoder(), '-profile:v', '2',
-                '-c:a', 'aac', '-b:a', '320k', temporary
-            ], check=True, capture_output=True)
-            self._track_artifact(mov_path)
-            os.replace(temporary, mov_path)
-            self._remove_artifact_if_unprotected(source_path)
-            msg = "✅ ProRes 转码完成！" if self.lang == "zh" else "✅ ProRes ready!"
         else:
             self._track_artifact(filepath)
             os.replace(source_path, filepath)
             msg = "✅ 抖音视频下载完成！" if self.lang == "zh" else "✅ Douyin video downloaded!"
 
         if not audio_only:
-            self._validate_video_output(
-                mov_path if prores else filepath,
-                'mov' if prores else 'mp4')
+            self._validate_video_output(filepath, 'mp4')
         self._advance_progress('complete', 1.0)
         self._set_status(text=msg, text_color=("#34C759", "#30D158"))
         return True

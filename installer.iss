@@ -1,5 +1,5 @@
 #define MyAppName "Danload"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.2.2"
 #define MyAppPublisher "Danub3"
 #define MyAppURL "https://github.com/Danub3/Danload"
 #define MyAppExeName "Danload.exe"

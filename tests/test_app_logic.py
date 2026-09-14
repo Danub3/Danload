@@ -10,6 +10,7 @@ from app import (
     DownloaderApp,
     entry_drag_scroll_units,
 )
+from danload_core import editing_conversion_plan
 
 
 class EntryDragScrollTests(unittest.TestCase):
@@ -196,54 +197,6 @@ class CancellationAndSubtitleTests(unittest.TestCase):
             self.assertTrue(os.path.exists(existing))
             self.assertFalse(os.path.exists(created))
 
-    def test_mkv_packaging_does_not_delete_a_preexisting_source(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = os.path.join(directory, 'existing-video')
-            source = f'{base}.mp4'
-            destination = f'{base}.mkv'
-            with open(source, 'wb') as output:
-                output.write(b'original')
-
-            self.app._begin_download_transaction(directory)
-
-            def fake_ffmpeg(args, **_kwargs):
-                with open(args[-1], 'wb') as output:
-                    output.write(b'packaged')
-                return mock.Mock(returncode=0)
-
-            self.app._run_cancellable_process = fake_ffmpeg
-            result = self.app._ensure_mkv_output(base)
-
-            self.assertEqual(result, destination)
-            self.assertTrue(os.path.exists(source))
-            self.assertTrue(os.path.exists(destination))
-
-    def test_mp4_remux_uses_a_sibling_when_destination_exists(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = os.path.join(directory, 'clip')
-            source = f'{base}.mkv'
-            existing = f'{base}.mp4'
-            with open(source, 'wb') as output:
-                output.write(b'mkv')
-            with open(existing, 'wb') as output:
-                output.write(b'original')
-
-            self.app._begin_download_transaction(directory)
-
-            def fake_ffmpeg(args, **_kwargs):
-                with open(args[-1], 'wb') as output:
-                    output.write(b'remuxed')
-                return mock.Mock(returncode=0)
-
-            self.app._run_cancellable_process = fake_ffmpeg
-            result = self.app._remux_to_mp4(base)
-
-            self.assertEqual(result, 'mp4')
-            with open(existing, 'rb') as output:
-                self.assertEqual(output.read(), b'original')
-            with open(f'{base} (1).mp4', 'rb') as output:
-                self.assertEqual(output.read(), b'remuxed')
-
     def test_output_collision_gets_a_unique_sibling_name(self):
         with tempfile.TemporaryDirectory() as directory:
             existing = os.path.join(directory, 'clip.mp4')
@@ -273,6 +226,51 @@ class CancellationAndSubtitleTests(unittest.TestCase):
             metadata = {'title': 'clip', 'ext': 'mp4'}
             result = self.app._unique_media_output_template(options, metadata)
             self.assertTrue(result.endswith('clip (1).%(ext)s'))
+
+    def test_locate_downloaded_media_accepts_native_extension_from_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = os.path.join(directory, 'clip')
+            output = f'{base}.mxf'
+            with open(output, 'wb') as media:
+                media.write(b'video')
+            self.assertEqual(self.app._locate_downloaded_media(base, {}), output)
+
+    def test_locate_downloaded_media_prefers_yt_dlp_reported_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reported = os.path.join(directory, 'clip.actual')
+            fallback = os.path.join(directory, 'clip.other')
+            for path in (reported, fallback):
+                with open(path, 'wb') as media:
+                    media.write(b'video')
+            info = {'filepath': reported}
+            self.assertEqual(self.app._locate_downloaded_media(
+                os.path.join(directory, 'clip'), info), reported)
+
+    def test_locate_downloaded_media_resolves_relative_reported_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reported = os.path.join(directory, 'clip.actual')
+            with open(reported, 'wb') as media:
+                media.write(b'video')
+            self.assertEqual(
+                self.app._locate_downloaded_media(
+                    os.path.join(directory, 'clip'),
+                    {'filepath': os.path.basename(reported)}),
+                reported)
+
+    def test_output_collision_detects_unknown_existing_extension(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.join(directory, 'clip')
+            self.app._logger = None
+            self.app._log_diagnostic = lambda *args, **kwargs: None
+            with open(f'{root}.mxf', 'wb') as media:
+                media.write(b'video')
+            options = {'outtmpl': f'{root}.%(ext)s'}
+            metadata = {'title': 'clip', 'id': '1'}
+            with mock.patch('app.yt_dlp.YoutubeDL') as youtube_dl:
+                youtube_dl.return_value.__enter__.return_value.prepare_filename.return_value = f'{root}.mxf'
+                self.assertEqual(
+                    self.app._unique_media_output_template(options, metadata),
+                    f'{root} (1).%(ext)s')
 
     def test_no_matching_subtitle_is_not_silent(self):
         self.app._detect_original_audio_lang = lambda info: 'fr'
@@ -421,10 +419,11 @@ class VideoOutputValidationTests(unittest.TestCase):
             }
             self.app._validate_video_output(media.name, expected_container)
 
-    def test_mkv_mp4_and_prores_outputs_require_matching_container_and_streams(self):
+    def test_native_containers_require_matching_container_and_streams(self):
         self._validate('.mkv', 'mkv', 'matroska,webm')
         self._validate('.mp4', 'mp4', 'mov,mp4,m4a,3gp,3g2,mj2')
-        self._validate('.mov', 'mov', 'mov,mp4,m4a,3gp,3g2,mj2', 'prores_ks')
+        self._validate('.mov', 'mov', 'mov,mp4,m4a,3gp,3g2,mj2')
+        self._validate('.webm', 'webm', 'matroska,webm', 'vp9')
 
     def test_video_without_audio_is_rejected(self):
         with tempfile.NamedTemporaryFile(suffix='.mkv') as media:
@@ -434,6 +433,200 @@ class VideoOutputValidationTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(RuntimeError, 'video and audio'):
                 self.app._validate_video_output(media.name, 'mkv')
+
+
+class EditingCompatibilityTests(unittest.TestCase):
+    SOURCE_PROBE = {
+        'format': {'format_name': 'matroska,webm', 'duration': '10.0'},
+        'streams': [
+            {
+                'codec_type': 'video', 'codec_name': 'av1',
+                'pix_fmt': 'yuv420p10le', 'width': 3840, 'height': 2160,
+                'sample_aspect_ratio': '1:1', 'avg_frame_rate': '30000/1001',
+                'color_range': 'tv',
+                'color_space': 'bt2020nc', 'color_transfer': 'arib-std-b67',
+                'color_primaries': 'bt2020',
+            },
+            {
+                'codec_type': 'audio', 'codec_name': 'opus',
+                'channels': 2, 'channel_layout': 'stereo', 'sample_rate': '48000',
+            },
+        ],
+    }
+
+    OUTPUT_PROBE = {
+        'format': {'format_name': 'mov,mp4,m4a,3gp,3g2,mj2', 'duration': '10.0'},
+        'streams': [
+            {
+                'codec_type': 'video', 'codec_name': 'prores',
+                'pix_fmt': 'yuv422p10le', 'width': 3840, 'height': 2160,
+                'sample_aspect_ratio': '1:1', 'avg_frame_rate': '30000/1001',
+                'color_range': 'tv',
+                'color_space': 'bt2020nc', 'color_transfer': 'arib-std-b67',
+                'color_primaries': 'bt2020',
+            },
+            {
+                'codec_type': 'audio', 'codec_name': 'pcm_s24le',
+                'channels': 2, 'channel_layout': 'stereo', 'sample_rate': '48000',
+            },
+        ],
+    }
+
+    def setUp(self):
+        self.app = object.__new__(DownloaderApp)
+        self.app.lang = 'en'
+        self.app._log_diagnostic = lambda *args, **kwargs: None
+        self.app._ensure_download_state()
+
+    def test_command_transcodes_av1_and_opus_without_changing_media_geometry(self):
+        args, plan = self.app._build_editing_conversion_command(
+            '/tmp/source.mkv', '/tmp/output.mov', self.SOURCE_PROBE)
+        self.assertEqual(args[args.index('-c:v') + 1], 'libx265')
+        self.assertEqual(args[args.index('-pix_fmt') + 1], 'yuv420p10le')
+        self.assertEqual(args[args.index('-c:a') + 1], 'aac')
+        self.assertEqual(args[args.index('-colorspace') + 1], 'bt2020nc')
+        self.assertEqual(args[args.index('-color_trc') + 1], 'arib-std-b67')
+        self.assertIn('-noautorotate', args)
+        self.assertIn('0:a?', args)
+        self.assertIn('passthrough', args)
+        self.assertEqual(plan['video_label'], 'HEVC')
+
+    def test_explicit_prores_preset_reaches_the_ffmpeg_command(self):
+        args, plan = self.app._build_editing_conversion_command(
+            '/tmp/source.mkv', '/tmp/output.mov', self.SOURCE_PROBE, 'prores')
+        self.assertEqual(args[args.index('-c:v') + 1], 'prores_ks')
+        self.assertEqual(args[args.index('-profile:v') + 1], '3')
+        self.assertEqual(args[args.index('-c:a') + 1], 'pcm_s24le')
+        self.assertEqual(plan['target_codec'], 'prores')
+        self.assertEqual(plan['quality_model'], 'visually_near_lossless')
+
+    def test_validator_checks_resolution_frame_rate_color_and_audio(self):
+        with tempfile.NamedTemporaryFile(suffix='.mov') as output:
+            self.app._probe_media = lambda _path: self.OUTPUT_PROBE
+            prores_plan = editing_conversion_plan(self.SOURCE_PROBE, 'prores')
+            self.app._validate_editing_output(self.SOURCE_PROBE, output.name, prores_plan)
+
+            changed = dict(self.OUTPUT_PROBE)
+            changed['streams'] = [dict(stream) for stream in self.OUTPUT_PROBE['streams']]
+            changed['streams'][0]['color_transfer'] = 'bt709'
+            self.app._probe_media = lambda _path: changed
+            with self.assertRaisesRegex(RuntimeError, 'color_transfer'):
+                self.app._validate_editing_output(self.SOURCE_PROBE, output.name, prores_plan)
+
+            changed['streams'][0]['color_transfer'] = 'arib-std-b67'
+            changed['streams'][0]['sample_aspect_ratio'] = '4:3'
+            self.app._probe_media = lambda _path: changed
+            with self.assertRaisesRegex(RuntimeError, 'sample aspect ratio'):
+                self.app._validate_editing_output(self.SOURCE_PROBE, output.name, prores_plan)
+
+            changed['streams'][0]['sample_aspect_ratio'] = '1:1'
+            changed['streams'][1]['channel_layout'] = '5.1'
+            with self.assertRaisesRegex(RuntimeError, 'channel_layout'):
+                self.app._validate_editing_output(self.SOURCE_PROBE, output.name, prores_plan)
+
+    def test_validator_accepts_implicit_limited_range_but_not_missing_full_range(self):
+        with tempfile.NamedTemporaryFile(suffix='.mov') as output:
+            output_probe = dict(self.OUTPUT_PROBE)
+            output_probe['streams'] = [
+                dict(stream) for stream in self.OUTPUT_PROBE['streams']]
+            output_probe['streams'][0].pop('color_range')
+            self.app._probe_media = lambda _path: output_probe
+            prores_plan = editing_conversion_plan(self.SOURCE_PROBE, 'prores')
+            self.app._validate_editing_output(
+                self.SOURCE_PROBE, output.name, prores_plan)
+
+            full_range_source = dict(self.SOURCE_PROBE)
+            full_range_source['streams'] = [
+                dict(stream) for stream in self.SOURCE_PROBE['streams']]
+            full_range_source['streams'][0]['color_range'] = 'pc'
+            with self.assertRaisesRegex(RuntimeError, 'color_range'):
+                self.app._validate_editing_output(
+                    full_range_source, output.name, prores_plan)
+
+    def test_conversion_preserves_source_and_never_overwrites_existing_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, 'clip.mkv')
+            existing = os.path.join(directory, 'clip.edit-ready.mov')
+            with open(source, 'wb') as output:
+                output.write(b'source')
+            with open(existing, 'wb') as output:
+                output.write(b'existing')
+
+            self.app._begin_download_transaction(directory)
+            output_probe = {
+                'format': {'format_name': 'mov,mp4,m4a,3gp,3g2,mj2', 'duration': '10.0'},
+                'streams': [
+                    {
+                        'codec_type': 'video', 'codec_name': 'hevc',
+                        'pix_fmt': 'yuv420p10le', 'width': 3840, 'height': 2160,
+                        'sample_aspect_ratio': '1:1', 'avg_frame_rate': '30000/1001',
+                        'color_range': 'tv', 'color_space': 'bt2020nc',
+                        'color_transfer': 'arib-std-b67', 'color_primaries': 'bt2020',
+                    },
+                    {
+                        'codec_type': 'audio', 'codec_name': 'aac',
+                        'channels': 2, 'channel_layout': 'stereo', 'sample_rate': '48000',
+                    },
+                ],
+            }
+            self.app._probe_media = lambda path: (
+                self.SOURCE_PROBE if path == source else output_probe)
+            self.app._set_status = lambda *args, **kwargs: None
+            self.app._advance_progress = lambda *args, **kwargs: None
+
+            def fake_ffmpeg(args, _duration):
+                with open(args[-1], 'wb') as output:
+                    output.write(b'converted')
+
+            self.app._run_editing_ffmpeg = fake_ffmpeg
+            self.app.t = lambda _key: 'Done ({format})'
+            self.app.reset_ui_state = lambda: None
+            errors = []
+            self.app.handle_error = errors.append
+
+            self.app.convert_for_editing(source)
+
+            with open(source, 'rb') as input_file:
+                self.assertEqual(input_file.read(), b'source')
+            with open(existing, 'rb') as input_file:
+                self.assertEqual(input_file.read(), b'existing')
+            self.assertTrue(os.path.isfile(
+                os.path.join(directory, 'clip.edit-ready.mp4')))
+            self.assertFalse(errors)
+
+    def test_conversion_runner_terminates_ffmpeg_when_cancelled(self):
+        class FakeProcess:
+            stdout = ['out_time_us=1000000\n']
+
+            def __init__(self):
+                self.terminated = False
+                self.wait_calls = []
+
+            def poll(self):
+                return None if not self.terminated else -15
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                self.wait_calls.append(timeout)
+                return -15
+
+        process = FakeProcess()
+        self.app._set_status = lambda *args, **kwargs: None
+        self.app._advance_progress = lambda *args, **kwargs: (
+            self.app._cancel_event.set() or 0)
+
+        with mock.patch('app.subprocess.Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, 'CANCELLED_BY_USER'):
+                self.app._run_editing_ffmpeg(['ffmpeg'], 2.0)
+
+        self.assertTrue(process.terminated)
+        self.assertIn(1.0, process.wait_calls)
+        self.assertNotIn(process, self.app._active_processes)
 
 
 class BilibiliRecoveryTests(unittest.TestCase):
@@ -467,7 +660,6 @@ class BilibiliRecoveryTests(unittest.TestCase):
         self.app.t = lambda key: {
             'status_retry_bilibili': 'Refreshing Bilibili media links...',
             'status_done_original': 'Done ({container})',
-            'status_done_mkv_fallback': 'Done (MKV fallback)',
         }[key]
 
     def test_audio_cdn_failure_cleans_single_stream_and_reextracts(self):
@@ -513,7 +705,7 @@ class BilibiliRecoveryTests(unittest.TestCase):
                 pass
 
         with mock.patch('app.yt_dlp.YoutubeDL', FakeYoutubeDL):
-            app.download_media(self.URL, 'video_original', 'mkv', {})
+            app.download_media(self.URL, 'video', None, {})
 
         self.assertEqual(FakeYoutubeDL.metadata_calls, 2)
         self.assertEqual(FakeYoutubeDL.download_calls, 2)
@@ -544,7 +736,7 @@ class BilibiliRecoveryTests(unittest.TestCase):
                 pass
 
         with mock.patch('app.yt_dlp.YoutubeDL', AlwaysFailYoutubeDL):
-            app.download_media(self.URL, 'video_original', 'mkv', {})
+            app.download_media(self.URL, 'video', None, {})
 
         self.assertFalse(os.path.exists(incomplete))
         self.assertEqual(len(self.errors), 1)

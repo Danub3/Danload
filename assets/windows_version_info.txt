@@ -1,7 +1,7 @@
 VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(1, 2, 1, 0),
-        prodvers=(1, 2, 1, 0),
+        filevers=(1, 2, 2, 0),
+        prodvers=(1, 2, 2, 0),
         mask=0x3f,
         flags=0x0,
         OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
                 [
                     StringStruct(u'CompanyName', u'Danub3'),
                     StringStruct(u'FileDescription', u'Danload media downloader'),
-                    StringStruct(u'FileVersion', u'1.2.1.0'),
+                    StringStruct(u'FileVersion', u'1.2.2.0'),
                     StringStruct(u'InternalName', u'Danload'),
                     StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Danub3'),
                     StringStruct(u'OriginalFilename', u'Danload.exe'),
                     StringStruct(u'ProductName', u'Danload'),
-                    StringStruct(u'ProductVersion', u'1.2.1'),
+                    StringStruct(u'ProductVersion', u'1.2.2'),
                 ],
             )
         ]),

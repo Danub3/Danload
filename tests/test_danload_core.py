@@ -3,6 +3,7 @@ import unittest
 
 from danload_core import (
     choose_subtitle_languages,
+    editing_conversion_plan,
     highest_video_summary,
     media_format_selector,
     progress_fraction,
@@ -46,33 +47,67 @@ class ProgressTests(unittest.TestCase):
 
 class DownloadSelectionTests(unittest.TestCase):
     def test_quality_first_media_selectors(self):
-        self.assertEqual(media_format_selector('video_original'), 'bv*+ba/b')
-        self.assertEqual(media_format_selector('video_prores'), 'bv*+ba/b')
+        self.assertEqual(media_format_selector('video'), 'bv*+ba/b')
         self.assertEqual(media_format_selector('audio'), 'bestaudio/best')
         self.assertIsNone(media_format_selector('general_file'))
 
-    def test_video_formats_map_to_existing_download_paths(self):
-        self.assertEqual(
-            resolve_download_selection('video', 'MKV', False),
-            ('video_original', 'mkv', False))
-        self.assertEqual(
-            resolve_download_selection('video', 'MP4', True),
-            ('video_original', 'mp4', True))
-        self.assertEqual(
-            resolve_download_selection('video', 'ProRes', True),
-            ('video_prores', 'mkv', True))
+    def test_video_download_keeps_native_container(self):
+        self.assertEqual(resolve_download_selection('video', None, True),
+                         ('video', None, True))
 
     def test_non_video_modes_cannot_attach_subtitles(self):
         self.assertEqual(
-            resolve_download_selection('audio', 'ProRes', True),
-            ('audio', 'mkv', False))
+            resolve_download_selection('audio', 'ignored', True),
+            ('audio', None, False))
         self.assertEqual(
-            resolve_download_selection('general_file', 'MP4', True),
-            ('general_file', 'mkv', False))
+            resolve_download_selection('general_file', 'ignored', True),
+            ('general_file', None, False))
 
     def test_unknown_mode_is_rejected(self):
         with self.assertRaises(ValueError):
             resolve_download_selection('subtitles', 'SRT', True)
+
+
+class EditingConversionPlanTests(unittest.TestCase):
+    def test_hdr_av1_and_opus_choose_hevc_and_aac(self):
+        plan = editing_conversion_plan({'streams': [
+            {'codec_type': 'video', 'codec_name': 'av1', 'pix_fmt': 'yuv420p10le'},
+            {'codec_type': 'audio', 'codec_name': 'opus'},
+        ]})
+        self.assertFalse(plan['copy_video'])
+        self.assertEqual(plan['target_codec'], 'hevc')
+        self.assertEqual(plan['output_pixel_format'], 'yuv420p10le')
+        self.assertEqual(plan['video_label'], 'HEVC')
+        self.assertFalse(plan['copy_audio'])
+
+    def test_existing_prores_and_aac_are_stream_copied(self):
+        plan = editing_conversion_plan({'streams': [
+            {'codec_type': 'video', 'codec_name': 'prores', 'pix_fmt': 'yuv422p10le'},
+            {'codec_type': 'audio', 'codec_name': 'aac'},
+        ]})
+        self.assertTrue(plan['copy_video'])
+        self.assertTrue(plan['copy_audio'])
+
+    def test_full_chroma_source_uses_prores_4444(self):
+        plan = editing_conversion_plan({'streams': [
+            {'codec_type': 'video', 'codec_name': 'vp9', 'pix_fmt': 'yuv444p10le'},
+        ]})
+        self.assertEqual(plan['video_profile'], 4)
+        self.assertEqual(plan['output_pixel_format'], 'yuv444p10le')
+
+    def test_alpha_pixel_formats_use_prores_4444_with_alpha(self):
+        plan = editing_conversion_plan({'streams': [
+            {'codec_type': 'video', 'codec_name': 'ffv1', 'pix_fmt': 'gbrap10le'},
+        ]})
+        self.assertEqual(plan['target_codec'], 'ffv1')
+        self.assertEqual(plan['quality_model'], 'video_stream_copy')
+        self.assertEqual(plan['container'], 'mkv')
+
+    def test_file_without_video_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'video stream'):
+            editing_conversion_plan({'streams': [
+                {'codec_type': 'audio', 'codec_name': 'aac'},
+            ]})
 
 
 class SubtitleTests(unittest.TestCase):
